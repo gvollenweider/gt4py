@@ -7,15 +7,14 @@
 # SPDX-License-Identifier: BSD-3-Clause
 import warnings
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Iterable
 
 import dace
 import numpy as np
 
-from gt4py._core import definitions as core_defs
-from gt4py.next import common as gtx_common
+from gt4py.next import common as gtx_common, utils as gtx_utils
 
-from . import utils as gtx_dace_utils
+from . import utility as dace_utils
 
 
 try:
@@ -24,12 +23,16 @@ except ImportError:
     cp = None
 
 
-def _convert_arg(arg: Any, sdfg_param: str) -> Any:
+def _convert_arg(arg: Any, sdfg_param: str, use_field_canonical_representation: bool) -> Any:
     if not isinstance(arg, gtx_common.Field):
         return arg
     if len(arg.domain.dims) == 0:
         # Pass zero-dimensional fields as scalars.
-        return arg.as_scalar()
+        # We need to extract the scalar value from the 0d numpy array without changing its type.
+        # Note that 'ndarray.item()' always transforms the numpy scalar to a python scalar,
+        # which may change its precision. To avoid this, we use here the empty tuple as index
+        # for 'ndarray.__getitem__()'.
+        return arg.ndarray[()]
     # field domain offsets are not supported
     non_zero_offsets = [
         (dim, dim_range)
@@ -41,20 +44,33 @@ def _convert_arg(arg: Any, sdfg_param: str) -> Any:
         raise RuntimeError(
             f"Field '{sdfg_param}' passed as array slice with offset {dim_range.start} on dimension {dim.value}."
         )
-    return arg.ndarray
+    if not use_field_canonical_representation:
+        return arg.ndarray
+    # the canonical representation requires alphabetical ordering of the dimensions in field domain definition
+    sorted_dims = dace_utils.get_sorted_dims(arg.domain.dims)
+    ndim = len(sorted_dims)
+    dim_indices = [dim_index for dim_index, _ in sorted_dims]
+    if isinstance(arg.ndarray, np.ndarray):
+        return np.moveaxis(arg.ndarray, range(ndim), dim_indices)
+    else:
+        assert cp is not None and isinstance(arg.ndarray, cp.ndarray)
+        return cp.moveaxis(arg.ndarray, range(ndim), dim_indices)
 
 
-def _get_args(sdfg: dace.SDFG, args: Sequence[Any]) -> dict[str, Any]:
+def _get_args(
+    sdfg: dace.SDFG, args: Sequence[Any], use_field_canonical_representation: bool
+) -> dict[str, Any]:
     sdfg_params: Sequence[str] = sdfg.arg_names
+    flat_args: Iterable[Any] = gtx_utils.flatten_nested_tuple(tuple(args))
     return {
-        sdfg_param: _convert_arg(arg, sdfg_param)
-        for sdfg_param, arg in zip(sdfg_params, args, strict=True)
+        sdfg_param: _convert_arg(arg, sdfg_param, use_field_canonical_representation)
+        for sdfg_param, arg in zip(sdfg_params, flat_args, strict=True)
     }
 
 
 def _ensure_is_on_device(
-    connectivity_arg: core_defs.NDArrayObject, device: dace.dtypes.DeviceType
-) -> core_defs.NDArrayObject:
+    connectivity_arg: np.typing.NDArray, device: dace.dtypes.DeviceType
+) -> np.typing.NDArray:
     if device == dace.dtypes.DeviceType.GPU:
         if not isinstance(connectivity_arg, cp.ndarray):
             warnings.warn(
@@ -66,7 +82,7 @@ def _ensure_is_on_device(
 
 
 def _get_shape_args(
-    arrays: Mapping[str, dace.data.Array], args: Mapping[str, core_defs.NDArrayObject]
+    arrays: Mapping[str, dace.data.Array], args: Mapping[str, np.typing.NDArray]
 ) -> dict[str, int]:
     shape_args: dict[str, int] = {}
     for name, value in args.items():
@@ -75,14 +91,14 @@ def _get_shape_args(
                 assert sym.name not in shape_args
                 shape_args[sym.name] = size
             elif sym != size:
-                raise ValueError(
+                raise RuntimeError(
                     f"Expected shape {arrays[name].shape} for arg {name}, got {value.shape}."
                 )
     return shape_args
 
 
 def _get_stride_args(
-    arrays: Mapping[str, dace.data.Array], args: Mapping[str, core_defs.NDArrayObject]
+    arrays: Mapping[str, dace.data.Array], args: Mapping[str, np.typing.NDArray]
 ) -> dict[str, int]:
     stride_args = {}
     for name, value in args.items():
@@ -94,9 +110,9 @@ def _get_stride_args(
                 )
             if isinstance(sym, dace.symbol):
                 assert sym.name not in stride_args
-                stride_args[sym.name] = stride
+                stride_args[str(sym)] = stride
             elif sym != stride:
-                raise ValueError(
+                raise RuntimeError(
                     f"Expected stride {arrays[name].strides} for arg {name}, got {value.strides}."
                 )
     return stride_args
@@ -106,7 +122,7 @@ def get_sdfg_conn_args(
     sdfg: dace.SDFG,
     offset_provider: gtx_common.OffsetProvider,
     on_gpu: bool,
-) -> dict[str, core_defs.NDArrayObject]:
+) -> dict[str, np.typing.NDArray]:
     """
     Extracts the connectivity tables that are used in the sdfg and ensures
     that the memory buffers are allocated for the target device.
@@ -114,41 +130,33 @@ def get_sdfg_conn_args(
     device = dace.DeviceType.GPU if on_gpu else dace.DeviceType.CPU
 
     connectivity_args = {}
-    for offset, connectivity in offset_provider.items():
-        if gtx_common.is_neighbor_table(connectivity):
-            param = gtx_dace_utils.connectivity_identifier(offset)
-            if param in sdfg.arrays:
-                connectivity_args[param] = _ensure_is_on_device(connectivity.ndarray, device)
+    for offset, connectivity in dace_utils.filter_connectivities(offset_provider).items():
+        assert isinstance(connectivity, gtx_common.NeighborTable)
+        param = dace_utils.connectivity_identifier(offset)
+        if param in sdfg.arrays:
+            connectivity_args[param] = _ensure_is_on_device(connectivity.table, device)
 
     return connectivity_args
 
 
 def get_sdfg_args(
     sdfg: dace.SDFG,
-    offset_provider: gtx_common.OffsetProvider,
     *args: Any,
     check_args: bool = False,
     on_gpu: bool = False,
+    use_field_canonical_representation: bool = True,
+    **kwargs: Any,
 ) -> dict[str, Any]:
     """Extracts the arguments needed to call the SDFG.
 
-    This function can handle the arguments that are passed to the dace runner
-    and that end up in the decoration stage of the dace backend workflow.
+    This function can handle the same arguments that are passed to dace runner.
 
     Args:
         sdfg:               The SDFG for which we want to get the arguments.
-        offset_provider:    The offset provider.
-        args:               The list of arguments passed to the dace runner.
-        check_args:         If True, return only the arguments that are expected
-                            according to the SDFG signature.
-        on_gpu:             If True, this method ensures that the arrays for the
-                            connectivity tables are allocated in GPU memory.
-
-    Returns:
-        A dictionary of keyword arguments to be passed in the SDFG call.
     """
+    offset_provider = kwargs["offset_provider"]
 
-    dace_args = _get_args(sdfg, args)
+    dace_args = _get_args(sdfg, args, use_field_canonical_representation)
     dace_field_args = {n: v for n, v in dace_args.items() if not np.isscalar(v)}
     dace_conn_args = get_sdfg_conn_args(sdfg, offset_provider, on_gpu)
     dace_shapes = _get_shape_args(sdfg.arrays, dace_field_args)
