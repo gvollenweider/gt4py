@@ -31,10 +31,12 @@ E2V = gtx.FieldOffset("E2V", source=V, target=(E, E2VDim))
 
 # 0 --0-- 1 --1-- 2
 e2v_arr = np.array([[0, 1], [1, 2]])
-e2v_conn = gtx.as_connectivity(
-    domain={E: 2, E2VDim: 2},
-    codomain=V,
-    data=e2v_arr,
+e2v_conn = gtx.NeighborTableOffsetProvider(
+    table=e2v_arr,
+    origin_axis=E,
+    neighbor_axis=V,
+    max_neighbors=2,
+    has_skip_values=False,
 )
 
 
@@ -90,34 +92,6 @@ def test_write_map_conditional_neighbors_and_const_list():
             as_fieldop(lambda it: make_const_list(deref(it)), domain)(mask),
             as_fieldop(lambda it: neighbors(E2V, it), domain)(inp),
             as_fieldop(lambda it: make_const_list(deref(it)), domain)(42.0),
-        )
-
-    inp = gtx.as_field([V], np.arange(3))
-    mask_field = gtx.as_field([E], np.array([True, False]))
-    with embedded_context.new_context(offset_provider={"E2V": e2v_conn}) as ctx:
-        result = ctx.run(testee, inp, mask_field)
-
-    ref = np.empty_like(e2v_arr, dtype=float)
-    ref[0, :] = e2v_arr[0, :]
-    ref[1, :] = 42.0
-    np.testing.assert_array_equal(result.asnumpy(), ref)
-
-
-def test_write_non_mapped_conditional_neighbors_and_const_list():
-    """
-    This test-case demonstrates a non-supported pattern:
-    Current ITIR requires the `if_` to be `map_`ed, see `test_write_map_conditional_neighbors_and_const_list`.
-    We keep it here for documenting corner cases of the `itir.List` implementation for future discussions.
-    """
-
-    pytest.skip("Unsupported.")
-
-    def testee(inp, mask):
-        domain = runtime.UnstructuredDomain({E: range(2)})
-        return as_fieldop(lambda m, x, y: if_(deref(m), deref(x), deref(y)), domain)(
-            mask,
-            as_fieldop(lambda it: make_const_list(deref(it)), domain)(42.0),
-            as_fieldop(lambda it: neighbors(E2V, it), domain)(inp),
         )
 
     inp = gtx.as_field([V], np.arange(3))

@@ -15,7 +15,6 @@ import copy
 import dataclasses
 import itertools
 import math
-import operator
 import sys
 import warnings
 
@@ -55,6 +54,7 @@ from gt4py.next.embedded import (
 )
 from gt4py.next.ffront import fbuiltins
 from gt4py.next.iterator import builtins, runtime
+from gt4py.next.iterator.type_system import type_specifications as itir_ts
 from gt4py.next.otf import arguments
 from gt4py.next.type_system import type_specifications as ts, type_translation
 
@@ -86,132 +86,84 @@ FieldAxis: TypeAlias = common.Dimension
 TupleAxis: TypeAlias = type[None]
 Axis: TypeAlias = Union[FieldAxis, TupleAxis]
 Scalar: TypeAlias = (
-    SupportsInt
-    | SupportsFloat
-    | np.int8
-    | np.uint8
-    | np.int16
-    | np.uint16
-    | np.int32
-    | np.uint32
-    | np.int64
-    | np.uint64
-    | np.float32
-    | np.float64
-    | np.bool_
+    SupportsInt | SupportsFloat | np.int32 | np.int64 | np.float32 | np.float64 | np.bool_
 )
 
 
 class SparseTag(Tag): ...
 
 
-@xtyping.deprecated("Use a 'Connectivity' instead.")
-def NeighborTableOffsetProvider(
-    table: core_defs.NDArrayObject,
-    origin_axis: common.Dimension,
-    neighbor_axis: common.Dimension,
-    max_neighbors: int,
-    has_skip_values=True,
-) -> common.Connectivity:
-    return common._connectivity(
-        table,
-        codomain=neighbor_axis,
-        domain={
-            origin_axis: table.shape[0],
-            common.Dimension(
-                value="_DummyLocalDim", kind=common.DimensionKind.LOCAL
-            ): max_neighbors,
-        },
-        skip_value=common._DEFAULT_SKIP_VALUE if has_skip_values else None,
-    )
-
-
-# TODO(havogt): complete implementation and make available for fieldview embedded
-@dataclasses.dataclass(frozen=True)
-class StridedConnectivityField(common.Connectivity):
-    domain_dims: tuple[common.Dimension, common.Dimension]
-    codomain_dim: common.Dimension
-    _max_neighbors: int
-
+class NeighborTableOffsetProvider:
     def __init__(
         self,
-        domain_dims: Sequence[common.Dimension],
-        codomain_dim: common.Dimension,
+        table: core_defs.NDArrayObject,
+        origin_axis: common.Dimension,
+        neighbor_axis: common.Dimension,
         max_neighbors: int,
-    ):
-        object.__setattr__(self, "domain_dims", tuple(domain_dims))
-        object.__setattr__(self, "codomain_dim", codomain_dim)
-        object.__setattr__(self, "_max_neighbors", max_neighbors)
-
-    @property
-    def __gt_origin__(self) -> xtyping.Never:
-        raise NotImplementedError
-
-    def __gt_type__(self) -> common.NeighborConnectivityType:
-        return common.NeighborConnectivityType(
-            domain=self.domain_dims,
-            codomain=self.codomain_dim,
-            max_neighbors=self._max_neighbors,
-            skip_value=self.skip_value,
-            dtype=self.dtype,
-        )
-
-    @property
-    def domain(self) -> common.Domain:
-        return common.Domain(
-            dims=self.domain_dims,
-            ranges=(common.UnitRange.infinite(), common.unit_range(self._max_neighbors)),
-        )
-
-    @property
-    def codomain(self) -> common.Dimension:
-        return self.codomain_dim
-
-    @property
-    def dtype(self) -> core_defs.DType[core_defs.IntegralScalar]:
-        return core_defs.Int32DType()  # type: ignore[return-value]
-
-    @property
-    def ndarray(self) -> core_defs.NDArrayObject:
-        raise NotImplementedError
-
-    def asnumpy(self) -> np.ndarray:
-        raise NotImplementedError
-
-    def premap(self, index_field: common.Connectivity | fbuiltins.FieldOffset) -> common.Field:
-        raise NotImplementedError
-
-    def restrict(  # type: ignore[override]
-        self,
-        item: common.AnyIndexSpec,
-    ) -> common.Field:
-        if not isinstance(item, tuple) or (isinstance(item, tuple) and not len(item) == 2):
-            raise NotImplementedError()  # TODO(havogt): add proper slicing
-        index = item[0] * self._max_neighbors + item[1]  # type: ignore[operator, call-overload]
-        return ConstantField(index)
-
-    def as_scalar(self) -> xtyping.Never:
-        raise NotImplementedError()
-
-    def __call__(
-        self,
-        index_field: common.Connectivity | fbuiltins.FieldOffset,
-        *args: common.Connectivity | fbuiltins.FieldOffset,
-    ) -> common.Field:
-        raise NotImplementedError()
-
-    __getitem__ = restrict  # type: ignore[assignment]
-
-    def inverse_image(
-        self, image_range: common.UnitRange | common.NamedRange
-    ) -> Sequence[common.NamedRange]:
-        raise NotImplementedError
-
-    @property
-    def skip_value(
-        self,
+        has_skip_values=True,
     ) -> None:
-        return None
+        self.table = table
+        self.origin_axis = origin_axis
+        self.neighbor_axis = neighbor_axis
+        assert not hasattr(table, "shape") or table.shape[1] == max_neighbors
+        self.max_neighbors = max_neighbors
+        self.has_skip_values = has_skip_values
+        self.index_type = table.dtype
+
+    def mapped_index(
+        self, primary: common.IntIndex, neighbor_idx: common.IntIndex
+    ) -> common.IntIndex:
+        res = self.table[(primary, neighbor_idx)]
+        assert common.is_int_index(res)
+        return res
+
+    if dace:
+        # Extension of NeighborTableOffsetProvider adding SDFGConvertible support in GT4Py Programs
+        def _dace_data_ptr(self) -> int:
+            obj = self.table
+            if dace.dtypes.is_array(obj):
+                if hasattr(obj, "__array_interface__"):
+                    return obj.__array_interface__["data"][0]
+                if hasattr(obj, "__cuda_array_interface__"):
+                    return obj.__cuda_array_interface__["data"][0]
+            raise ValueError("Unsupported data container.")
+
+        def _dace_descriptor(self) -> dace.data.Data:
+            return dace.data.create_datadescriptor(self.table)
+    else:
+
+        def _dace_data_ptr(self) -> NoReturn:  # type: ignore[misc]
+            raise NotImplementedError(
+                "data_ptr is only supported when the 'dace' module is available."
+            )
+
+        def _dace_descriptor(self) -> NoReturn:  # type: ignore[misc]
+            raise NotImplementedError(
+                "__descriptor__ is only supported when the 'dace' module is available."
+            )
+
+    data_ptr = _dace_data_ptr
+    __descriptor__ = _dace_descriptor
+
+
+class StridedNeighborOffsetProvider:
+    def __init__(
+        self,
+        origin_axis: common.Dimension,
+        neighbor_axis: common.Dimension,
+        max_neighbors: int,
+        has_skip_values=True,
+    ) -> None:
+        self.origin_axis = origin_axis
+        self.neighbor_axis = neighbor_axis
+        self.max_neighbors = max_neighbors
+        self.has_skip_values = has_skip_values
+        self.index_type = int
+
+    def mapped_index(
+        self, primary: common.IntIndex, neighbor_idx: common.IntIndex
+    ) -> common.IntIndex:
+        return primary * self.max_neighbors + neighbor_idx
 
 
 # Offsets
@@ -392,13 +344,6 @@ def not_(a):
     return not a
 
 
-@builtins.neg.register(EMBEDDED)
-def neg(a):
-    if isinstance(a, Column):
-        return np.negative(a)
-    return np.negative(a)
-
-
 @builtins.gamma.register(EMBEDDED)
 def gamma(a):
     gamma_ = np.vectorize(math.gamma)
@@ -407,6 +352,27 @@ def gamma(a):
     res = gamma_(a)
     assert res.ndim == 0
     return res.item()
+
+
+@builtins.and_.register(EMBEDDED)
+def and_(a, b):
+    if isinstance(a, Column):
+        return np.logical_and(a, b)
+    return a and b
+
+
+@builtins.or_.register(EMBEDDED)
+def or_(a, b):
+    if isinstance(a, Column):
+        return np.logical_or(a, b)
+    return a or b
+
+
+@builtins.xor_.register(EMBEDDED)
+def xor_(a, b):
+    if isinstance(a, Column):
+        return np.logical_xor(a, b)
+    return a ^ b
 
 
 @builtins.tuple_get.register(EMBEDDED)
@@ -496,6 +462,66 @@ def named_range(tag: Tag | common.Dimension, start: int, end: int) -> NamedRange
     return (tag, range(start, end))
 
 
+@builtins.minus.register(EMBEDDED)
+def minus(first, second):
+    return first - second
+
+
+@builtins.plus.register(EMBEDDED)
+def plus(first, second):
+    return first + second
+
+
+@builtins.multiplies.register(EMBEDDED)
+def multiplies(first, second):
+    return first * second
+
+
+@builtins.divides.register(EMBEDDED)
+def divides(first, second):
+    return first / second
+
+
+@builtins.floordiv.register(EMBEDDED)
+def floordiv(first, second):
+    return first // second
+
+
+@builtins.mod.register(EMBEDDED)
+def mod(first, second):
+    return first % second
+
+
+@builtins.eq.register(EMBEDDED)
+def eq(first, second):
+    return first == second
+
+
+@builtins.greater.register(EMBEDDED)
+def greater(first, second):
+    return first > second
+
+
+@builtins.less.register(EMBEDDED)
+def less(first, second):
+    return first < second
+
+
+@builtins.less_equal.register(EMBEDDED)
+def less_equal(first, second):
+    return first <= second
+
+
+@builtins.greater_equal.register(EMBEDDED)
+def greater_equal(first, second):
+    return first >= second
+
+
+@builtins.not_eq.register(EMBEDDED)
+def not_eq(first, second):
+    return first != second
+
+
 CompositeOfScalarOrField: TypeAlias = Scalar | common.Field | tuple["CompositeOfScalarOrField", ...]
 
 
@@ -524,32 +550,11 @@ def promote_scalars(val: CompositeOfScalarOrField):
         )
 
 
-for math_builtin_name in builtins.ARITHMETIC_BUILTINS | builtins.TYPE_BUILTINS:
-    python_builtins: dict[str, Callable] = {
-        "int": int,
-        "float": float,
-        "bool": bool,
-        "str": str,
-        "plus": operator.add,
-        "minus": operator.sub,
-        "multiplies": operator.mul,
-        "divides": operator.truediv,
-        "mod": operator.mod,
-        "floordiv": operator.floordiv,
-        "eq": operator.eq,
-        "less": operator.lt,
-        "greater": operator.gt,
-        "greater_equal": operator.ge,
-        "less_equal": operator.le,
-        "not_eq": operator.ne,
-        "and_": operator.and_,
-        "or_": operator.or_,
-        "xor_": operator.xor,
-        "neg": operator.neg,
-    }
+for math_builtin_name in builtins.MATH_BUILTINS:
+    python_builtins = {"int": int, "float": float, "bool": bool, "str": str}
     decorator = getattr(builtins, math_builtin_name).register(EMBEDDED)
     impl: Callable
-    if math_builtin_name in ["gamma", "not_"]:
+    if math_builtin_name == "gamma":
         continue  # treated explicitly
     elif math_builtin_name in python_builtins:
         # TODO: Should potentially use numpy fixed size types to be consistent
@@ -592,11 +597,10 @@ def execute_shift(
                     new_entry[i] = 0
                 else:
                     offset_implementation = offset_provider[tag]
-                    assert common.is_neighbor_connectivity(offset_implementation)
-                    source_dim = offset_implementation.__gt_type__().source_dim
-                    cur_index = pos[source_dim.value]
+                    assert isinstance(offset_implementation, common.Connectivity)
+                    cur_index = pos[offset_implementation.origin_axis.value]
                     assert common.is_int_index(cur_index)
-                    if offset_implementation[cur_index, index].as_scalar() in [
+                    if offset_implementation.mapped_index(cur_index, index) in [
                         None,
                         common._DEFAULT_SKIP_VALUE,
                     ]:
@@ -616,22 +620,22 @@ def execute_shift(
         else:
             raise AssertionError()
         return new_pos
-    elif common.is_neighbor_connectivity(offset_implementation):
-        source_dim = offset_implementation.__gt_type__().source_dim
-        assert source_dim.value in pos
+    else:
+        assert isinstance(offset_implementation, common.Connectivity)
+        assert offset_implementation.origin_axis.value in pos
         new_pos = pos.copy()
-        new_pos.pop(source_dim.value)
-        cur_index = pos[source_dim.value]
+        new_pos.pop(offset_implementation.origin_axis.value)
+        cur_index = pos[offset_implementation.origin_axis.value]
         assert common.is_int_index(cur_index)
-        if offset_implementation[cur_index, index].as_scalar() in [
+        if offset_implementation.mapped_index(cur_index, index) in [
             None,
             common._DEFAULT_SKIP_VALUE,
         ]:
             return None
         else:
-            new_index = offset_implementation[cur_index, index].as_scalar()
+            new_index = offset_implementation.mapped_index(cur_index, index)
             assert new_index is not None
-            new_pos[offset_implementation.codomain.value] = int(new_index)
+            new_pos[offset_implementation.neighbor_axis.value] = int(new_index)
 
         return new_pos
 
@@ -1192,22 +1196,20 @@ class IndexField(common.Field):
 
     def premap(
         self,
-        index_field: common.Connectivity | fbuiltins.FieldOffset,
-        *args: common.Connectivity | fbuiltins.FieldOffset,
+        index_field: common.ConnectivityField | fbuiltins.FieldOffset,
+        *args: common.ConnectivityField | fbuiltins.FieldOffset,
     ) -> common.Field:
         # TODO can be implemented by constructing and ndarray (but do we know of which kind?)
         raise NotImplementedError()
 
     def restrict(self, item: common.AnyIndexSpec) -> Self:
         if isinstance(item, Sequence) and all(isinstance(e, common.NamedIndex) for e in item):
-            assert len(item) == 1
             assert isinstance(item[0], common.NamedIndex)  # for mypy errors on multiple lines below
             d, r = item[0]
             assert d == self._dimension
             assert isinstance(r, core_defs.INTEGRAL_TYPES)
-            # TODO(tehrengruber): Use a regular zero dimensional field instead.
             return self.__class__(self._dimension, r)
-        # TODO: set a domain...
+        # TODO set a domain...
         raise NotImplementedError()
 
     __call__ = premap
@@ -1318,8 +1320,8 @@ class ConstantField(common.Field[Any, core_defs.ScalarT]):
 
     def premap(
         self,
-        index_field: common.Connectivity | fbuiltins.FieldOffset,
-        *args: common.Connectivity | fbuiltins.FieldOffset,
+        index_field: common.ConnectivityField | fbuiltins.FieldOffset,
+        *args: common.ConnectivityField | fbuiltins.FieldOffset,
     ) -> common.Field:
         # TODO can be implemented by constructing and ndarray (but do we know of which kind?)
         raise NotImplementedError()
@@ -1419,17 +1421,15 @@ class _List(Generic[DT]):
     def __getitem__(self, i: int):
         return self.values[i]
 
-    def __gt_type__(self) -> ts.ListType:
+    def __gt_type__(self) -> itir_ts.ListType:
         offset_tag = self.offset.value
         assert isinstance(offset_tag, str)
         element_type = type_translation.from_value(self.values[0])
         assert isinstance(element_type, ts.DataType)
-        offset_provider = embedded_context.offset_provider.get()
-        assert offset_provider is not None
-        connectivity = offset_provider[offset_tag]
-        assert common.is_neighbor_connectivity(connectivity)
-        local_dim = connectivity.__gt_type__().neighbor_dim
-        return ts.ListType(element_type=element_type, offset_type=local_dim)
+        return itir_ts.ListType(
+            element_type=element_type,
+            offset_type=common.Dimension(value=offset_tag, kind=common.DimensionKind.LOCAL),
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1439,10 +1439,10 @@ class _ConstList(Generic[DT]):
     def __getitem__(self, _):
         return self.value
 
-    def __gt_type__(self) -> ts.ListType:
+    def __gt_type__(self) -> itir_ts.ListType:
         element_type = type_translation.from_value(self.value)
         assert isinstance(element_type, ts.DataType)
-        return ts.ListType(
+        return itir_ts.ListType(
             element_type=element_type,
             offset_type=_CONST_DIM,
         )
@@ -1455,11 +1455,11 @@ def neighbors(offset: runtime.Offset, it: ItIterator) -> _List:
     offset_provider = embedded_context.offset_provider.get()
     assert offset_provider is not None
     connectivity = offset_provider[offset_str]
-    assert common.is_neighbor_connectivity(connectivity)
+    assert isinstance(connectivity, common.Connectivity)
     return _List(
         values=tuple(
             shifted.deref()
-            for i in range(connectivity.__gt_type__().max_neighbors)
+            for i in range(connectivity.max_neighbors)
             if (shifted := it.shift(offset_str, i)).can_deref()
         ),
         offset=offset,
@@ -1531,11 +1531,11 @@ class SparseListIterator:
         offset_provider = embedded_context.offset_provider.get()
         assert offset_provider is not None
         connectivity = offset_provider[self.list_offset]
-        assert common.is_neighbor_connectivity(connectivity)
+        assert isinstance(connectivity, common.Connectivity)
         return _List(
             values=tuple(
                 shifted.deref()
-                for i in range(connectivity.__gt_type__().max_neighbors)
+                for i in range(connectivity.max_neighbors)
                 if (
                     shifted := self.it.shift(*self.offsets, SparseTag(self.list_offset), i)
                 ).can_deref()
@@ -1665,15 +1665,13 @@ def scan(scan_pass, is_forward: bool, init):
     return impl
 
 
-def _dimension_to_tag(
-    domain: runtime.CartesianDomain | runtime.UnstructuredDomain,
-) -> dict[Tag, range]:
-    return {k.value: v for k, v in domain.items()}
+def _dimension_to_tag(domain: Domain) -> dict[Tag, range]:
+    return {k.value if isinstance(k, common.Dimension) else k: v for k, v in domain.items()}
 
 
-def _validate_domain(domain: Domain, offset_provider_type: common.OffsetProviderType) -> None:
+def _validate_domain(domain: Domain, offset_provider: OffsetProvider) -> None:
     if isinstance(domain, runtime.CartesianDomain):
-        if any(isinstance(o, common.ConnectivityType) for o in offset_provider_type.values()):
+        if any(isinstance(o, common.Connectivity) for o in offset_provider.values()):
             raise RuntimeError(
                 "Got a 'CartesianDomain', but found a 'Connectivity' in 'offset_provider', expected 'UnstructuredDomain'."
             )
@@ -1760,7 +1758,7 @@ def _fieldspec_list_to_value(
     domain: common.Domain, type_: ts.TypeSpec
 ) -> tuple[common.Domain, ts.TypeSpec]:
     """Translate the list element type into the domain."""
-    if isinstance(type_, ts.ListType):
+    if isinstance(type_, itir_ts.ListType):
         if type_.offset_type == _CONST_DIM:
             return domain.insert(
                 len(domain), common.named_range((_CONST_DIM, 1))
@@ -1770,10 +1768,10 @@ def _fieldspec_list_to_value(
             offset_type = type_.offset_type
             assert isinstance(offset_type, common.Dimension)
             connectivity = offset_provider[offset_type.value]
-            assert common.is_neighbor_connectivity(connectivity)
+            assert isinstance(connectivity, common.Connectivity)
             return domain.insert(
                 len(domain),
-                common.named_range((offset_type, connectivity.__gt_type__().max_neighbors)),
+                common.named_range((offset_type, connectivity.max_neighbors)),
             ), type_.element_type
     return domain, type_
 
@@ -1789,26 +1787,22 @@ def as_fieldop(fun: Callable, domain: runtime.CartesianDomain | runtime.Unstruct
 
         # TODO(havogt): after updating all tests to use the new program,
         # we should get rid of closure and move the implementation to this function
-        closure(domain, fun, out, list(args))
+        closure(_dimension_to_tag(domain), fun, out, list(args))
         return out
 
     return impl
 
 
-@builtins.index.register(EMBEDDED)
-def index(axis: common.Dimension) -> common.Field:
-    return IndexField(axis)
-
-
+@runtime.closure.register(EMBEDDED)
 def closure(
-    domain_: runtime.CartesianDomain | runtime.UnstructuredDomain,
+    domain_: Domain,
     sten: Callable[..., Any],
     out,  #: MutableLocatedField,
     ins: list[common.Field | Scalar | tuple[common.Field | Scalar | tuple, ...]],
 ) -> None:
     assert embedded_context.within_valid_context()
     offset_provider = embedded_context.offset_provider.get()
-    _validate_domain(domain_, common.offset_provider_to_type(offset_provider))
+    _validate_domain(domain_, offset_provider)
     domain: dict[Tag, range] = _dimension_to_tag(domain_)
     if not (isinstance(out, common.Field) or is_tuple_of_field(out)):
         raise TypeError("'Out' needs to be a located field.")
