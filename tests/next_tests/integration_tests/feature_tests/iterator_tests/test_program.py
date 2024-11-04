@@ -18,7 +18,6 @@ from gt4py.next.iterator.builtins import (
     index,
     named_range,
     shift,
-    INTEGER_INDEX_BUILTIN,
 )
 from gt4py.next.iterator.runtime import fendef, fundef, set_at
 
@@ -43,6 +42,7 @@ def copy_program(inp, out, size):
     )
 
 
+@pytest.mark.starts_from_gtir_program
 def test_prog(program_processor):
     program_processor, validate = program_processor
 
@@ -64,12 +64,13 @@ def index_program_simple(out, size):
     )
 
 
-@pytest.mark.uses_index_fields
+@pytest.mark.starts_from_gtir_program
+@pytest.mark.uses_index_builtin
 def test_index_builtin(program_processor):
     program_processor, validate = program_processor
 
     isize = 10
-    out = gtx.as_field([I], np.zeros(shape=(isize,)), dtype=getattr(np, INTEGER_INDEX_BUILTIN))
+    out = gtx.as_field([I], np.zeros(shape=(isize,)), dtype=getattr(np, itir.INTEGER_INDEX_BUILTIN))
 
     run_processor(index_program_simple, program_processor, out, isize, offset_provider={})
     if validate:
@@ -87,12 +88,12 @@ def index_program_shift(out, size):
     )
 
 
-@pytest.mark.uses_index_fields
+@pytest.mark.uses_index_builtin
 def test_index_builtin_shift(program_processor):
     program_processor, validate = program_processor
 
     isize = 10
-    out = gtx.as_field([I], np.zeros(shape=(isize,)), dtype=getattr(np, INTEGER_INDEX_BUILTIN))
+    out = gtx.as_field([I], np.zeros(shape=(isize,)), dtype=getattr(np, itir.INTEGER_INDEX_BUILTIN))
 
     run_processor(index_program_shift, program_processor, out, isize, offset_provider={"Ioff": I})
     if validate:
