@@ -6,30 +6,31 @@
 # Please, refer to the LICENSE file in the root directory.
 # SPDX-License-Identifier: BSD-3-Clause
 
-import copy
-
-import diskcache
 import numpy as np
 import pytest
+import copy
+import diskcache
+
 
 import gt4py.next as gtx
-from gt4py.next.iterator import builtins, ir as itir
+from gt4py.next.iterator import ir as itir
 from gt4py.next.iterator.ir_utils import ir_makers as im
 from gt4py.next.otf import arguments, languages, stages
 from gt4py.next.program_processors.codegens.gtfn import gtfn_module
 from gt4py.next.program_processors.runners import gtfn
 from gt4py.next.type_system import type_translation
-
 from next_tests.integration_tests import cases
+from next_tests.integration_tests.feature_tests.ffront_tests.ffront_test_utils import KDim
+
 from next_tests.integration_tests.cases import cartesian_case
+
 from next_tests.integration_tests.feature_tests.ffront_tests.ffront_test_utils import (
-    KDim,
     exec_alloc_descriptor,
 )
 
 
 @pytest.fixture
-def program_example():
+def fencil_example():
     IDim = gtx.Dimension("I")
     params = [gtx.as_field([IDim], np.empty((1,), dtype=np.float32)), np.float32(3.14)]
     param_types = [type_translation.from_value(param) for param in params]
@@ -41,13 +42,13 @@ def program_example():
                 fun=itir.SymRef(id="named_range"),
                 args=[
                     itir.AxisLiteral(value="I"),
-                    im.literal("0", builtins.INTEGER_INDEX_BUILTIN),
-                    im.literal("10", builtins.INTEGER_INDEX_BUILTIN),
+                    im.literal("0", itir.INTEGER_INDEX_BUILTIN),
+                    im.literal("10", itir.INTEGER_INDEX_BUILTIN),
                 ],
             )
         ],
     )
-    program = itir.Program(
+    fencil = itir.FencilDefinition(
         id="example",
         params=[im.sym(name, type_) for name, type_ in zip(("buf", "sc"), param_types)],
         function_definitions=[
@@ -57,22 +58,20 @@ def program_example():
                 expr=im.literal("1", "float32"),
             )
         ],
-        declarations=[],
-        body=[
-            itir.SetAt(
-                expr=im.as_fieldop(itir.SymRef(id="stencil"), domain)(
-                    itir.SymRef(id="buf"), itir.SymRef(id="sc")
-                ),
+        closures=[
+            itir.StencilClosure(
                 domain=domain,
-                target=itir.SymRef(id="buf"),
+                stencil=itir.SymRef(id="stencil"),
+                output=itir.SymRef(id="buf"),
+                inputs=[itir.SymRef(id="buf"), itir.SymRef(id="sc")],
             )
         ],
     )
-    return program, params
+    return fencil, params
 
 
-def test_codegen(program_example):
-    fencil, parameters = program_example
+def test_codegen(fencil_example):
+    fencil, parameters = fencil_example
     module = gtfn_module.translate_program_cpu(
         stages.CompilableProgram(
             data=fencil,
@@ -86,15 +85,15 @@ def test_codegen(program_example):
     assert module.language is languages.CPP
 
 
-def test_hash_and_diskcache(program_example, tmp_path):
-    fencil, parameters = program_example
+def test_hash_and_diskcache(fencil_example, tmp_path):
+    fencil, parameters = fencil_example
     compilable_program = stages.CompilableProgram(
         data=fencil,
         args=arguments.CompileTimeArgs.from_concrete_no_size(
             *parameters, **{"offset_provider": {}}
         ),
     )
-    hash = stages.fingerprint_compilable_program(compilable_program)
+    hash = gtfn.fingerprint_compilable_program(compilable_program)
 
     with diskcache.Cache(tmp_path) as cache:
         cache[hash] = compilable_program
@@ -107,31 +106,31 @@ def test_hash_and_diskcache(program_example, tmp_path):
         del reopened_cache[hash]  # delete data
 
     # hash creation is deterministic
-    assert hash == stages.fingerprint_compilable_program(compilable_program)
-    assert hash == stages.fingerprint_compilable_program(compilable_program_from_cache)
+    assert hash == gtfn.fingerprint_compilable_program(compilable_program)
+    assert hash == gtfn.fingerprint_compilable_program(compilable_program_from_cache)
 
     # hash is different if program changes
     altered_program_id = copy.deepcopy(compilable_program)
     altered_program_id.data.id = "example2"
-    assert stages.fingerprint_compilable_program(
+    assert gtfn.fingerprint_compilable_program(
         compilable_program
-    ) != stages.fingerprint_compilable_program(altered_program_id)
+    ) != gtfn.fingerprint_compilable_program(altered_program_id)
 
     altered_program_offset_provider = copy.deepcopy(compilable_program)
     object.__setattr__(altered_program_offset_provider.args, "offset_provider", {"Koff": KDim})
-    assert stages.fingerprint_compilable_program(
+    assert gtfn.fingerprint_compilable_program(
         compilable_program
-    ) != stages.fingerprint_compilable_program(altered_program_offset_provider)
+    ) != gtfn.fingerprint_compilable_program(altered_program_offset_provider)
 
     altered_program_column_axis = copy.deepcopy(compilable_program)
     object.__setattr__(altered_program_column_axis.args, "column_axis", KDim)
-    assert stages.fingerprint_compilable_program(
+    assert gtfn.fingerprint_compilable_program(
         compilable_program
-    ) != stages.fingerprint_compilable_program(altered_program_column_axis)
+    ) != gtfn.fingerprint_compilable_program(altered_program_column_axis)
 
 
-def test_gtfn_file_cache(program_example):
-    fencil, parameters = program_example
+def test_gtfn_file_cache(fencil_example):
+    fencil, parameters = fencil_example
     compilable_program = stages.CompilableProgram(
         data=fencil,
         args=arguments.CompileTimeArgs.from_concrete_no_size(
@@ -146,7 +145,7 @@ def test_gtfn_file_cache(program_example):
         gpu=False, cached=True, otf_workflow__cached_translation=False
     ).executor.step.translation
 
-    cache_key = stages.fingerprint_compilable_program(compilable_program)
+    cache_key = gtfn.fingerprint_compilable_program(compilable_program)
 
     # ensure the actual cached step in the backend generates the cache item for the test
     if cache_key in (translation_cache := cached_gtfn_translation_step.cache):
