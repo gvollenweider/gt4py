@@ -97,6 +97,7 @@ def inline_lambda(  # see todo above
 
     if all(eligible_params):
         new_expr.location = node.location
+        return new_expr
     else:
         new_expr = ir.FunCall(
             fun=ir.Lambda(
@@ -110,11 +111,8 @@ def inline_lambda(  # see todo above
             args=[arg for arg, eligible in zip(node.args, eligible_params) if not eligible],
             location=node.location,
         )
-    for attr in ("type", "recorded_shifts", "domain"):
-        if hasattr(node.annex, attr):
-            setattr(new_expr.annex, attr, getattr(node.annex, attr))
-    itir_inference.copy_type(from_=node, to=new_expr, allow_untyped=True)
-    return new_expr
+        itir_inference.copy_type(from_=node, to=new_expr, allow_untyped=True)
+        return new_expr
 
 
 @dataclasses.dataclass
@@ -122,10 +120,10 @@ class InlineLambdas(PreserveLocationVisitor, NodeTranslator):
     """
     Inline lambda calls by substituting every argument by its value.
 
-    Note: This pass preserves, but doesn't use the `type` `recorded_shifts`, `domain` annex.
+    Note: This pass preserves, but doesn't use the `type` and `recorded_shifts` annex.
     """
 
-    PRESERVED_ANNEX_ATTRS = ("type", "recorded_shifts", "domain")
+    PRESERVED_ANNEX_ATTRS = ("type", "recorded_shifts")
 
     opcount_preserving: bool
 
