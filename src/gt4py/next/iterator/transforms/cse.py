@@ -86,7 +86,7 @@ def _is_collectable_expr(node: itir.Node) -> bool:
         #  conceptual problems (other parts of the tool chain rely on the arguments being present directly
         #  on the reduce FunCall node (connectivity deduction)), as well as problems with the imperative backend
         #  backend (single pass eager depth first visit approach)
-        if isinstance(node.fun, itir.SymRef) and node.fun.id in ["lift", "shift", "reduce", "map_"]:
+        if isinstance(node.fun, itir.SymRef) and node.fun.id in ["lift", "shift", "reduce"]:
             return False
         return True
     elif isinstance(node, itir.Lambda):
@@ -376,7 +376,7 @@ def extract_subexpression(
     return _NodeReplacer(expr_map).visit(node), extracted, ignored_children
 
 
-ProgramOrExpr = TypeVar("ProgramOrExpr", bound=itir.Program | itir.Expr)
+ProgramOrExpr = TypeVar("ProgramOrExpr", bound=itir.Program | itir.FencilDefinition | itir.Expr)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -411,9 +411,9 @@ class CommonSubexpressionElimination(PreserveLocationVisitor, NodeTranslator):
         cls,
         node: ProgramOrExpr,
         within_stencil: bool | None = None,
-        offset_provider_type: common.OffsetProviderType | None = None,
+        offset_provider: common.OffsetProvider | None = None,
     ) -> ProgramOrExpr:
-        is_program = isinstance(node, itir.Program)
+        is_program = isinstance(node, (itir.Program, itir.FencilDefinition))
         if is_program:
             assert within_stencil is None
             within_stencil = False
@@ -422,16 +422,16 @@ class CommonSubexpressionElimination(PreserveLocationVisitor, NodeTranslator):
                 within_stencil is not None
             ), "The expression's context must be specified using `within_stencil`."
 
-        offset_provider_type = offset_provider_type or {}
+        offset_provider = offset_provider or {}
         node = itir_type_inference.infer(
-            node, offset_provider_type=offset_provider_type, allow_undeclared_symbols=not is_program
+            node, offset_provider=offset_provider, allow_undeclared_symbols=not is_program
         )
         return cls().visit(node, within_stencil=within_stencil)
 
     def generic_visit(self, node, **kwargs):
-        if cpm.is_call_to(node, "as_fieldop"):
+        if cpm.is_call_to("as_fieldop", node):
             assert not kwargs.get("within_stencil")
-        within_stencil = cpm.is_call_to(node, "as_fieldop") or kwargs.get("within_stencil")
+        within_stencil = cpm.is_call_to("as_fieldop", node) or kwargs.get("within_stencil")
 
         return super().generic_visit(node, **(kwargs | {"within_stencil": within_stencil}))
 
@@ -443,14 +443,10 @@ class CommonSubexpressionElimination(PreserveLocationVisitor, NodeTranslator):
 
         def predicate(subexpr: itir.Expr, num_occurences: int):
             # note: be careful here with the syntatic context: the expression might be in local
-            #  view, even though the syntactic context of `node` is in field view.
+            #  view, even though the syntactic context `node` is in field view.
             # note: what is extracted is sketched in the docstring above. keep it updated.
             if num_occurences > 1:
                 if within_stencil:
-                    # TODO(tehrengruber): Lists must not be extracted to avoid errors in partial
-                    #  shift detection of UnrollReduce pass. Solve there. See #1795.
-                    if isinstance(subexpr.type, ts.ListType):
-                        return False
                     return True
                 # condition is only necessary since typing on lambdas is not preserved during
                 #  the transformation

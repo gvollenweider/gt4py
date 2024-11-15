@@ -12,30 +12,31 @@ import dataclasses
 import functools
 from typing import Any, Literal, Mapping, Optional
 
+import gt4py.next as gtx
 from gt4py.next import common
-from gt4py.next.iterator import builtins, ir as itir
+from gt4py.next.iterator import ir as itir
 from gt4py.next.iterator.ir_utils import ir_makers as im
 from gt4py.next.iterator.transforms import trace_shifts
-from gt4py.next.iterator.transforms.constant_folding import ConstantFolding
 
 
 def _max_domain_sizes_by_location_type(offset_provider: Mapping[str, Any]) -> dict[str, int]:
     """
     Extract horizontal domain sizes from an `offset_provider`.
 
-    Considers the shape of the neighbor table to get the size of each `source_dim` and the maximum
-    value inside the neighbor table to get the size of each `codomain`.
+    Considers the shape of the neighbor table to get the size of each `origin_axis` and the maximum
+    value inside the neighbor table to get the size of each `neighbor_axis`.
     """
     sizes = dict[str, int]()
     for provider in offset_provider.values():
-        if common.is_neighbor_connectivity(provider):
-            conn_type = provider.__gt_type__()
-            sizes[conn_type.source_dim.value] = max(
-                sizes.get(conn_type.source_dim.value, 0), provider.ndarray.shape[0]
+        if isinstance(provider, gtx.NeighborTableOffsetProvider):
+            assert provider.origin_axis.kind == gtx.DimensionKind.HORIZONTAL
+            assert provider.neighbor_axis.kind == gtx.DimensionKind.HORIZONTAL
+            sizes[provider.origin_axis.value] = max(
+                sizes.get(provider.origin_axis.value, 0), provider.table.shape[0]
             )
-            sizes[conn_type.codomain.value] = max(
-                sizes.get(conn_type.codomain.value, 0),
-                provider.ndarray.max() + 1,  # type: ignore[attr-defined] # TODO(havogt): improve typing for NDArrayObject
+            sizes[provider.neighbor_axis.value] = max(
+                sizes.get(provider.neighbor_axis.value, 0),
+                provider.table.max() + 1,  # type: ignore[attr-defined] # TODO(havogt): improve typing for NDArrayObject
             )
     return sizes
 
@@ -113,7 +114,7 @@ class SymbolicDomain:
                 new_ranges[current_dim] = SymbolicRange.translate(
                     self.ranges[current_dim], val.value
                 )
-            elif common.is_neighbor_connectivity(nbt_provider):
+            elif isinstance(nbt_provider, common.Connectivity):
                 # unstructured shift
                 assert (
                     isinstance(val, itir.OffsetLiteral) and isinstance(val.value, int)
@@ -127,17 +128,17 @@ class SymbolicDomain:
                 else:
                     # note: ugly but cheap re-computation, but should disappear
                     horizontal_sizes = {
-                        k: im.literal(str(v), builtins.INTEGER_INDEX_BUILTIN)
+                        k: im.literal(str(v), itir.INTEGER_INDEX_BUILTIN)
                         for k, v in _max_domain_sizes_by_location_type(offset_provider).items()
                     }
 
-                old_dim = nbt_provider.__gt_type__().source_dim
-                new_dim = nbt_provider.__gt_type__().codomain
+                old_dim = nbt_provider.origin_axis
+                new_dim = nbt_provider.neighbor_axis
 
                 assert new_dim not in new_ranges or old_dim == new_dim
 
                 new_range = SymbolicRange(
-                    im.literal("0", builtins.INTEGER_INDEX_BUILTIN),
+                    im.literal("0", itir.INTEGER_INDEX_BUILTIN),
                     horizontal_sizes[new_dim.value],
                 )
                 new_ranges = dict(
@@ -162,15 +163,13 @@ def domain_union(*domains: SymbolicDomain) -> SymbolicDomain:
     assert all(domain.ranges.keys() == domains[0].ranges.keys() for domain in domains)
     for dim in domains[0].ranges.keys():
         start = functools.reduce(
-            lambda current_expr, el_expr: im.minimum(current_expr, el_expr),
+            lambda current_expr, el_expr: im.call("minimum")(current_expr, el_expr),
             [domain.ranges[dim].start for domain in domains],
         )
         stop = functools.reduce(
-            lambda current_expr, el_expr: im.maximum(current_expr, el_expr),
+            lambda current_expr, el_expr: im.call("maximum")(current_expr, el_expr),
             [domain.ranges[dim].stop for domain in domains],
         )
-        # constant fold expression to keep the tree small
-        start, stop = ConstantFolding.apply(start), ConstantFolding.apply(stop)  # type: ignore[assignment]  # always an itir.Expr
         new_domain_ranges[dim] = SymbolicRange(start, stop)
 
     return SymbolicDomain(domains[0].grid_type, new_domain_ranges)

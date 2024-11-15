@@ -21,14 +21,22 @@ from gt4py.next.iterator.transforms.cse import (
 
 
 @pytest.fixture
-def offset_provider_type(request):
+def offset_provider(request):
     return {"I": common.Dimension("I", kind=common.DimensionKind.HORIZONTAL)}
 
 
 def test_trivial():
-    common = im.plus("x", "y")
-    testee = im.plus(common, common)
-    expected = im.let("_cs_1", common)(im.plus("_cs_1", "_cs_1"))
+    common = ir.FunCall(fun=ir.SymRef(id="plus"), args=[ir.SymRef(id="x"), ir.SymRef(id="y")])
+    testee = ir.FunCall(fun=ir.SymRef(id="plus"), args=[common, common])
+    expected = ir.FunCall(
+        fun=ir.Lambda(
+            params=[ir.Sym(id="_cs_1")],
+            expr=ir.FunCall(
+                fun=ir.SymRef(id="plus"), args=[ir.SymRef(id="_cs_1"), ir.SymRef(id="_cs_1")]
+            ),
+        ),
+        args=[common],
+    )
     actual = CSE.apply(testee, within_stencil=True)
     assert actual == expected
 
@@ -129,13 +137,13 @@ def test_lambda_redef_same_arg_scope():
     assert actual == expected
 
 
-def test_if_can_deref_no_extraction(offset_provider_type):
+def test_if_can_deref_no_extraction(offset_provider):
     # Test that a subexpression only occurring in one branch of an `if_` is not moved outside the
     # if statement. A case using `can_deref` is used here as it is common.
 
     # if can_deref(⟪Iₒ, 1ₒ⟫(it)) then ·⟪Iₒ, 1ₒ⟫(it) + ·⟪Iₒ, 1ₒ⟫(it) else 1
     testee = im.if_(
-        im.can_deref(im.shift("I", 1)("it")),
+        im.call("can_deref")(im.shift("I", 1)("it")),
         im.plus(im.deref(im.shift("I", 1)("it")), im.deref(im.shift("I", 1)("it"))),
         # use something more involved where a subexpression can still be eliminated
         im.literal("1", "int32"),
@@ -143,38 +151,38 @@ def test_if_can_deref_no_extraction(offset_provider_type):
     # (λ(_cs_1) → if can_deref(_cs_1) then (λ(_cs_2) → _cs_2 + _cs_2)(·_cs_1) else 1)(⟪Iₒ, 1ₒ⟫(it))
     expected = im.let("_cs_1", im.shift("I", 1)("it"))(
         im.if_(
-            im.can_deref("_cs_1"),
+            im.call("can_deref")("_cs_1"),
             im.let("_cs_2", im.deref("_cs_1"))(im.plus("_cs_2", "_cs_2")),
             im.literal("1", "int32"),
         )
     )
 
-    actual = CSE.apply(testee, offset_provider_type=offset_provider_type, within_stencil=True)
+    actual = CSE.apply(testee, offset_provider=offset_provider, within_stencil=True)
     assert actual == expected
 
 
-def test_if_can_deref_eligible_extraction(offset_provider_type):
+def test_if_can_deref_eligible_extraction(offset_provider):
     # Test that a subexpression only occurring in both branches of an `if_` is moved outside the
     # if statement. A case using `can_deref` is used here as it is common.
 
     # if can_deref(⟪Iₒ, 1ₒ⟫(it)) then ·⟪Iₒ, 1ₒ⟫(it) else ·⟪Iₒ, 1ₒ⟫(it) + ·⟪Iₒ, 1ₒ⟫(it)
     testee = im.if_(
-        im.can_deref(im.shift("I", 1)("it")),
+        im.call("can_deref")(im.shift("I", 1)("it")),
         im.deref(im.shift("I", 1)("it")),
         im.plus(im.deref(im.shift("I", 1)("it")), im.deref(im.shift("I", 1)("it"))),
     )
     # (λ(_cs_3) → (λ(_cs_1) → if can_deref(_cs_3) then _cs_1 else _cs_1 + _cs_1)(·_cs_3))(⟪Iₒ, 1ₒ⟫(it))
     expected = im.let("_cs_3", im.shift("I", 1)("it"))(
         im.let("_cs_1", im.deref("_cs_3"))(
-            im.if_(im.can_deref("_cs_3"), "_cs_1", im.plus("_cs_1", "_cs_1"))
+            im.if_(im.call("can_deref")("_cs_3"), "_cs_1", im.plus("_cs_1", "_cs_1"))
         )
     )
 
-    actual = CSE.apply(testee, offset_provider_type=offset_provider_type, within_stencil=True)
+    actual = CSE.apply(testee, offset_provider=offset_provider, within_stencil=True)
     assert actual == expected
 
 
-def test_if_eligible_extraction(offset_provider_type):
+def test_if_eligible_extraction(offset_provider):
     # Test that a subexpression only occurring in the condition of an `if_` is moved outside the
     # if statement.
 
@@ -183,7 +191,7 @@ def test_if_eligible_extraction(offset_provider_type):
     # (λ(_cs_1) → if _cs_1 ∧ _cs_1 then c else d)(a ∧ b)
     expected = im.let("_cs_1", im.and_("a", "b"))(im.if_(im.and_("_cs_1", "_cs_1"), "c", "d"))
 
-    actual = CSE.apply(testee, offset_provider_type=offset_provider_type, within_stencil=True)
+    actual = CSE.apply(testee, offset_provider=offset_provider, within_stencil=True)
     assert actual == expected
 
 
@@ -280,16 +288,6 @@ def test_field_extraction_outside_asfieldop():
     #   as_fieldop(λ(x) → ·x, cartesian_domain())(a)
     # )
     expected = im.let("_cs_1", identity_fieldop(field))(plus_fieldop("_cs_1", "_cs_1"))
-
-    actual = CSE.apply(testee, within_stencil=False)
-    assert actual == expected
-
-
-def test_scalar_extraction_inside_as_fieldop():
-    common = im.plus(1, 2)
-
-    testee = im.as_fieldop(im.lambda_()(im.plus(common, common)))()
-    expected = im.as_fieldop(im.lambda_()(im.let("_cs_1", common)(im.plus("_cs_1", "_cs_1"))))()
 
     actual = CSE.apply(testee, within_stencil=False)
     assert actual == expected
