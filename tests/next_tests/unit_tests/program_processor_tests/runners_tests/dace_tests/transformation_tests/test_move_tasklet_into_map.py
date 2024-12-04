@@ -14,7 +14,7 @@ dace = pytest.importorskip("dace")
 from dace.sdfg import nodes as dace_nodes, propagation as dace_propagation
 from dace.transformation import dataflow as dace_dataflow
 
-from gt4py.next.program_processors.runners.dace import (
+from gt4py.next.program_processors.runners.dace_fieldview import (
     transformations as gtx_transformations,
 )
 
