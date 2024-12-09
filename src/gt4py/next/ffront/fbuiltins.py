@@ -10,12 +10,11 @@ import dataclasses
 import functools
 import inspect
 import math
-import operator
 from builtins import bool, float, int, tuple  # noqa: A004 shadowing a Python built-in
 from typing import Any, Callable, Final, Generic, ParamSpec, Tuple, TypeAlias, TypeVar, Union, cast
 
 import numpy as np
-from numpy import float32, float64, int8, int16, int32, int64, uint8, uint16, uint32, uint64
+from numpy import float32, float64, int32, int64
 
 from gt4py._core import definitions as core_defs
 from gt4py.next import common
@@ -30,19 +29,12 @@ PYTHON_TYPE_BUILTIN_NAMES = [t.__name__ for t in PYTHON_TYPE_BUILTINS]
 TYPE_BUILTINS = [
     common.Field,
     common.Dimension,
-    int8,
-    uint8,
-    int16,
-    uint16,
     int32,
-    uint32,
     int64,
-    uint64,
     float32,
     float64,
     *PYTHON_TYPE_BUILTINS,
-]  # TODO(tehrengruber): validate matches iterator.builtins.TYPE_BUILTINS?
-
+]
 TYPE_BUILTIN_NAMES = [t.__name__ for t in TYPE_BUILTINS]
 
 # Be aware: Type aliases are not fully supported in the frontend yet, e.g. `IndexType(1)` will not
@@ -204,7 +196,7 @@ def astype(
     return core_defs.dtype(type_).scalar_type(value)
 
 
-_UNARY_MATH_NUMBER_BUILTIN_IMPL: Final = {"abs": abs, "neg": operator.neg}
+_UNARY_MATH_NUMBER_BUILTIN_IMPL: Final = {"abs": abs}
 UNARY_MATH_NUMBER_BUILTIN_NAMES: Final = [*_UNARY_MATH_NUMBER_BUILTIN_IMPL.keys()]
 
 _UNARY_MATH_FP_BUILTIN_IMPL: Final = {
