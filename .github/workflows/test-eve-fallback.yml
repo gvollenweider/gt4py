@@ -1,17 +1,16 @@
 name: "Fallback: Test Eve"
 
 on:
-  push:
-    branches:
-    - main
   pull_request:
     branches:
     - main
+    - gtir  # TODO(tehrengruber): remove after GTIR refactoring #1582
     paths-ignore:  # Inverse of corresponding workflow
     - "src/gt4py/eve/**"
     - "tests/eve_tests/**"
-    - ".github/workflows/**"
-    - "*.lock"
+    - "workflows/**"
+    - "*.cfg"
+    - "*.ini"
     - "*.toml"
     - "*.yml"
 
@@ -19,8 +18,8 @@ jobs:
   test-eve:
     strategy:
       matrix:
-        os: ["ubuntu-latest"]
         python-version: ["3.10", "3.11"]
+        os: ["ubuntu-latest"]
 
     runs-on: ${{ matrix.os }}
     steps:
