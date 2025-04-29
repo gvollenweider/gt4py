@@ -743,7 +743,6 @@ class HorizontalInterval(eve.Node):
 
     This is separate from `gtir.Interval` because the endpoints may
     be outside the compute domain.
-
     """
 
     start: Optional[AxisBound]
