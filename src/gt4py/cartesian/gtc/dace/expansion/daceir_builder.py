@@ -867,6 +867,54 @@ class DaCeIRBuilder(eve.NodeTranslator):
             if isinstance(acc.offset, oir.VariableKOffset)
         }
 
+        # Book keep - field that will have absolute access in K, which therefore
+        # need an IndexAccess down the line rather than scalar
+        absolute_K_access_fields: Set[eve.SymbolRef] = {
+            acc.name
+            for acc in node.walk_values().if_isinstance(oir.FieldAccess)
+            if isinstance(acc.offset, common.AbsoluteKIndex)
+        }
+
+        # Welcome to another episode of "What the Hell is this workaround".
+        # Today, we are looking at cases where absolute read and cartesian writes
+        # live in the same vertical loop e.g.
+        # ```
+        #   with computation(PARALLEL), interval(...):
+        #       _ = field.abs(K=x)                      # noqa: ERA001
+        #       ...
+        #       field = a + b                           # noqa: ERA001
+        # ````
+        # This code is valid, the issue with DaCe bridge is that the volume given to
+        # the memlet differs in this case
+        #  - read memlet (absolute indexing): full array, we don't know
+        #  - write memlet (cartesian): 1 - we know exactly
+        # Since those apply to the same underlying array, DaCe is not too happy about it.
+        # The workaround is to use the "variable K offset" pipeline for the cartesian to
+        # match the wider volume and at the same time keep the relative index correct.
+        #
+        # It is dirty. Yes. I am ashamed. A little. But it'll go away (tm) in the new bridge.
+        #
+        # If you read this, and it hasn't, well, better get those refactor goggles on
+        # cause the entire indexing needs to be torched and rebuild.
+        #
+        # Cheerio,
+        # Florian
+        for acc in node.walk_values().if_isinstance(oir.FieldAccess):
+            if acc.name in absolute_K_access_fields:
+                if isinstance(acc.offset, common.CartesianOffset):
+                    if acc.offset.i != 0 or acc.offset.j != 0:
+                        raise NotImplementedError(
+                            "Flipping cartesian to variable K offset in case of"
+                            "an absolute K read in the same vertical loop is not implemented."
+                        )
+                    acc.offset = oir.VariableKOffset(
+                        k=oir.Literal(
+                            value=f"{acc.offset.k}",
+                            dtype=common.DataType.INT32,
+                            kind=common.ExprKind.SCALAR,
+                        )
+                    )
+
         # We book keep - all write offset to K
         K_write_with_offset = set()
         for assign_node in node.walk_values().if_isinstance(oir.AssignStmt):
@@ -876,14 +924,6 @@ class DaCeIRBuilder(eve.NodeTranslator):
                     and assign_node.left.offset.k != 0
                 ):
                     K_write_with_offset.add(assign_node.left.name)
-
-        # Book keep - field that will have absolute access in K, which therefore
-        # need an IndexAccess down the line rather than scalar
-        absolute_K_access_fields: Set[eve.SymbolRef] = {
-            acc.name
-            for acc in node.walk_values().if_isinstance(oir.FieldAccess)
-            if isinstance(acc.offset, common.AbsoluteKIndex)
-        }
 
         sections_idx = next(
             idx
