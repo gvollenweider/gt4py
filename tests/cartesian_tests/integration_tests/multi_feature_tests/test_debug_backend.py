@@ -329,6 +329,32 @@ def test_absolute_k_stencil():
     np.testing.assert_allclose(field_out.view(np.ndarray)[:, :, :], 15)
 
 
+def test_absolute_k_read_cartesian_write_stencil():
+    field_inout = gt_storage.ones(
+        dtype=np.float64, backend="dace:cpu", shape=(4, 4, 4), aligned_index=(0, 0, 0)
+    )
+    field_out = gt_storage.zeros(
+        dtype=np.float64, backend="dace:cpu", shape=(4, 4, 4), aligned_index=(0, 0, 0)
+    )
+    field_inout[:, :, 0] *= 10
+    field_inout[:, :, 1] *= 5
+
+    @gtscript.stencil(backend="dace:cpu")
+    def test_stencil(
+        inout_field: gtscript.Field[np.float64],
+        out_bottom: gtscript.Field[np.float64],
+    ):
+        with computation(PARALLEL), interval(...):
+            out_bottom = inout_field.at(K=2)
+            inout_field = 23
+
+    test_stencil(field_inout, field_out)
+
+    assert (field_inout[1, 1, :] == [23.0, 23.0, 23.0, 23.0]).all()
+    assert (field_out[1, 1, :] == [1.0, 1.0, 1.0, 23.0]).all()
+    # np.testing.assert_allclose(field_out.view(np.ndarray)[:, :, :], 15)
+
+
 def test_k_only_access_stencil():
     field_in = np.ones((4,), dtype=np.float64)
     field_out = gt_storage.zeros(
