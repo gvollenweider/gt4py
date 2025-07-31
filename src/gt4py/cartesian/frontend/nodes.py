@@ -40,8 +40,8 @@ BinaryOperator enumeration (:class:`BinaryOperator`)
 NativeFunction enumeration (:class:`NativeFunction`)
     Native function identifier
     [`ABS`, `MAX`, `MIN, `MOD`, `SIN`, `COS`, `TAN`, `ARCSIN`, `ARCCOS`, `ARCTAN`,
-    `SQRT`, `EXP`, `LOG`, `LOG10`, `ISFINITE`, `ISINF`, `ISNAN`, `FLOOR`, `CEIL`, `TRUNC`
-    `ROUND`, `INT`, `F32`, `F64`]
+    `SQRT`, `EXP`, `LOG`, `LOG10`, `ISFINITE`, `ISINF`, `ISNAN`, `FLOOR`, `CEIL`,
+    `TRUNC`, `F32`, `F64`, `ERF`, `ERFC`]
 
 LevelMarker enumeration (:class:`LevelMarker`)
     Special axis levels
@@ -414,9 +414,9 @@ class NativeFunction(enum.Enum):
     FLOOR = enum.auto()
     CEIL = enum.auto()
     TRUNC = enum.auto()
-    ROUND = enum.auto()
+    ERF = enum.auto()
+    ERFC = enum.auto()
 
-    INT = enum.auto()
     F32 = enum.auto()
     F64 = enum.auto()
 
@@ -454,8 +454,8 @@ NativeFunction.IR_OP_TO_NUM_ARGS = {
     NativeFunction.FLOOR: 1,
     NativeFunction.CEIL: 1,
     NativeFunction.TRUNC: 1,
-    NativeFunction.ROUND: 1,
-    NativeFunction.INT: 1,
+    NativeFunction.ERF: 1,
+    NativeFunction.ERFC: 1,
     NativeFunction.F32: 1,
     NativeFunction.F64: 1,
 }

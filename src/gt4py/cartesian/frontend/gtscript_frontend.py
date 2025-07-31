@@ -23,8 +23,6 @@ from gt4py.cartesian import definitions as gt_definitions, gtscript, utils as gt
 from gt4py.cartesian.frontend import node_util, nodes
 from gt4py.cartesian.frontend.base import Frontend, register
 from gt4py.cartesian.frontend.defir_to_gtir import DefIRToGTIR, UnrollVectorAssignments
-from gt4py.cartesian.gtc import utils as gtc_utils
-from gt4py.cartesian.utils import NOTHING, meta as gt_meta
 from gt4py.cartesian.frontend.exceptions import (
     GTScriptAssertionError,
     GTScriptDataTypeError,
@@ -891,7 +889,9 @@ class IRMaker(ast.NodeVisitor):
             "trunc": nodes.NativeFunction.TRUNC,
             "f32": nodes.NativeFunction.F32,
             "f64": nodes.NativeFunction.F64,
-        }
+            "erf": nodes.NativeFunction.ERF,
+            "erfc": nodes.NativeFunction.ERFC,
+        }  # Conversion table for functions to NativeFunctions
 
     def __call__(self, ast_root: ast.AST):
         assert (

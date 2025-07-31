@@ -12,13 +12,20 @@ import numpy as np
 
 
 try:
-    from scipy.special import gamma as gamma_
+    from scipy.special import erf as erf_, erfc as erfc_, gamma as gamma_
+
 except ImportError:
     import math
 
     # If scipy is not available, emulate gamma function using math.gamma
     gamma_ = np.vectorize(math.gamma)
     gamma_.types = ["f->f", "d->d", "F->F", "D->D"]
+    # If scipy is not available, emulate erf function using math.erf
+    erf_ = np.vectorize(math.erf)
+    erf_.types = ["f->f", "d->d", "F->F", "D->D"]
+    # If scipy is not available, emulate erfc function using math.erfc
+    erfc_ = np.vectorize(math.erfc)
+    erfc_.types = ["f->f", "d->d", "F->F", "D->D"]
 
 
 positive: np.ufunc = np.positive
@@ -69,7 +76,7 @@ isnan: np.ufunc = np.isnan
 floor: np.ufunc = np.floor
 ceil: np.ufunc = np.ceil
 trunc: np.ufunc = np.trunc
-round: np.ufunc = np.round
-int: Type[np.signedinteger] = np.int32  # noqa: A001 [builtin-variable-shadowing]
+erf: np.ufunc = erf_
+erfc: np.ufunc = erfc_
 f32: Type[np.floating] = np.float32  # type : ignore
 f64: Type[np.floating] = np.float64
