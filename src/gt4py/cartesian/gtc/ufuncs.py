@@ -6,9 +6,9 @@
 # Please, refer to the LICENSE file in the root directory.
 # SPDX-License-Identifier: BSD-3-Clause
 
-from typing import Type
-
 import numpy as np
+
+from gt4py._core.definitions import float32, float64, int8, int16, int32, int64  # noqa: F401
 
 
 try:
@@ -78,5 +78,3 @@ ceil: np.ufunc = np.ceil
 trunc: np.ufunc = np.trunc
 erf: np.ufunc = erf_
 erfc: np.ufunc = erfc_
-f32: Type[np.floating] = np.float32  # type : ignore
-f64: Type[np.floating] = np.float64

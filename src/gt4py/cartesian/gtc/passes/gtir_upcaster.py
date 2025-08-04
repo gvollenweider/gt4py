@@ -104,8 +104,13 @@ class _GTIRUpcasting(eve.NodeTranslator):
         )
 
     def visit_NativeFuncCall(self, node: gtir.NativeFuncCall, **kwargs: Any) -> gtir.NativeFuncCall:
-        # Skip upcasting for cast to int
-        if node.func in [NativeFunction.INT, NativeFunction.F32, NativeFunction.F64]:
+        # Skip upcasting for cast operations
+        if node.func in [
+            NativeFunction.INT32,
+            NativeFunction.INT64,
+            NativeFunction.FLOAT32,
+            NativeFunction.FLOAT64,
+        ]:
             return node
         upcasting_rule = functools.partial(
             _numpy_ufunc_upcasting_rule, ufunc=op_to_ufunc(node.func)
