@@ -18,6 +18,7 @@ import types
 from typing import (
     Any,
     Callable,
+    ClassVar,
     Dict,
     Final,
     List,
@@ -515,7 +516,9 @@ class CallInliner(ast.NodeTransformer):
     def visit_Assign(self, node: ast.Assign):
         if isinstance(node.value, ast.Call) and gt_meta.get_qualified_name_from_node(
             node.value.func
-        ) not in gtscript.MATH_BUILTINS.union(gtscript.TYPE_HINT_AND_CAST_BUILTINS).union(gtscript.REDUCTION_BUILTINS):
+        ) not in gtscript.MATH_BUILTINS.union(gtscript.TYPE_HINT_AND_CAST_BUILTINS).union(
+            gtscript.REDUCTION_BUILTINS
+        ):
             assert len(node.targets) == 1
             self.visit(node.value, target_node=node.targets[0])
             # This node can be now removed since the trivial assignment has been already done
