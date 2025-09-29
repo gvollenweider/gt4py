@@ -12,7 +12,7 @@ import functools
 
 import factory
 
-from gt4py._core import definitions as core_defs
+from gt4py._core import definitions as core_defs, filecache
 from gt4py.next import config
 from gt4py.next.otf import recipes, stages
 from gt4py.next.program_processors.runners.dace.workflow import decoration as decoration_step
@@ -39,10 +39,30 @@ class DaCeWorkflowFactory(factory.Factory):
         )
         auto_optimize: bool = False
 
-    translation = factory.SubFactory(
-        DaCeTranslationStepFactory,
-        device_type=factory.SelfAttribute("..device_type"),
-        auto_optimize=factory.SelfAttribute("..auto_optimize"),
+        cached_translation = factory.Trait(
+            translation=factory.LazyAttribute(
+                lambda o: workflow.CachedStep(
+                    o.bare_translation,
+                    hash_function=stages.fingerprint_compilable_program,
+                    cache=filecache.FileCache(str(config.BUILD_CACHE_DIR / "translation_cache")),
+                )
+            ),
+        )
+
+        bare_translation = factory.SubFactory(
+            DaCeTranslationStepFactory,
+            device_type=factory.SelfAttribute("..device_type"),
+            auto_optimize=factory.SelfAttribute("..auto_optimize"),
+            make_persistent=factory.SelfAttribute("..make_persistent"),
+        )
+
+    translation = factory.LazyAttribute(lambda o: o.bare_translation)
+    bindings = factory.LazyAttribute(
+        lambda o: functools.partial(
+            bindings_step.bind_sdfg,
+            bind_func_name=_GT_DACE_BINDING_FUNCTION_NAME,
+            make_persistent=o.make_persistent,
+        )
     )
     bindings = _no_bindings
     compilation = factory.SubFactory(

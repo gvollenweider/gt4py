@@ -437,7 +437,69 @@ def _is_protocol(type_: type, /) -> bool:
     return getattr(type_, "_is_protocol", False)
 
 
-is_protocol = getattr(_typing_extensions, "is_protocol", _is_protocol)
+class DataclassABC(_abc.ABC):
+    """ABC for data classes."""
+
+    __dataclass_fields__: ClassVar[dict[str, _dataclasses.Field]]
+    __dataclass_params__: ClassVar[_DataclassParamsABC]
+
+    @classmethod
+    def __subclasshook__(cls, subclass: type) -> bool:
+        return _dataclasses.is_dataclass(subclass)
+
+
+class _DataclassParamsABC(_abc.ABC):
+    init: bool
+    repr: bool
+    eq: bool
+    order: bool
+    unsafe_hash: bool
+    frozen: bool
+    match_args: bool
+    kw_only: bool
+    slots: bool
+    weakref_slot: bool
+
+
+class FrozenDataclass(DataclassABC):
+    """ABC for frozen data classes."""
+
+    __dataclass_params__: ClassVar[_FrozenDataclassParamsABC]
+
+    @_abc.abstractmethod
+    def __setattr__(self, name: str, value: Any) -> Never: ...
+
+    @classmethod
+    def __subclasshook__(cls, subclass: type) -> bool:
+        try:
+            return _dataclasses.is_dataclass(subclass) and (
+                subclass.__dataclass_params__.frozen is not None  # type: ignore[attr-defined]  # subclass.__dataclass_params__ is ok after check
+            )
+        except AttributeError:
+            return False
+
+
+class _FrozenDataclassParamsABC(_DataclassParamsABC):
+    frozen: Literal[True]
+
+
+_KT = TypeVar("_KT", contravariant=True)
+_VT = TypeVar("_VT")
+
+
+class OpaqueMutableMapping(Protocol[_KT, _VT]):
+    """
+    Mutable mapping without access to the keys, just setting, getting, deleting with a given key.
+    """
+
+    def __getitem__(self, key: _KT) -> _VT: ...
+
+    def __setitem__(self, key: _KT, value: _VT) -> None: ...
+
+    def __delitem__(self, key: _KT) -> None: ...
+
+
+is_protocol = _typing_extensions.is_protocol
 
 
 def get_partial_type_hints(
