@@ -394,7 +394,7 @@ class DeviceType(enum.IntEnum):
 
     CPU = 1
     CUDA = 2
-    # CPU_PINNED = 3    # noqa: ERA001
+    CPU_PINNED = 3    # noqa: ERA001
     # OPENCL = 4        # noqa: ERA001
     # VULKAN = 7        # noqa: ERA001
     # METAL = 8         # noqa: ERA001
