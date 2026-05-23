@@ -147,7 +147,7 @@ class GTIRToOIR(eve.NodeTranslator):
         body: List[oir.Stmt] = []
         for statement in node.body:
             oir_statement = self.visit(statement, **kwargs)
-            body.extend(utils.flatten_list(utils.listify(oir_statement)))
+            body.extend(utils.flatten(utils.listify(oir_statement)))
 
         return oir.For(
             index_name=node.index_name,
