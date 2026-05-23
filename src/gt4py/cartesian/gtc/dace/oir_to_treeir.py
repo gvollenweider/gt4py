@@ -226,10 +226,10 @@ class OIRToTreeIR(eve.NodeVisitor):
             groups = self._group_statements(node)
             self.visit(groups, ctx=ctx)
 
-    # HEAD
     def visit_For(self, node: oir.For, ctx: tir.Context) -> None:
         for_ = tir.For(
             iteration_variable=eve.SymbolRef(node.index_name),
+            iteration_step=f"{node.iter_step}",
             bounds=tir.Bounds(start=node.iter_start, end=node.iter_stop),
             schedule=DEFAULT_MAP_SCHEDULE[self._device_type],
             children=[],

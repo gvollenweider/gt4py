@@ -121,6 +121,7 @@ class While(TreeScope):
 
 class For(TreeScope):
     iteration_variable: eve.SymbolRef
+    iteration_step: str
     bounds: Bounds
 
     schedule: dtypes.ScheduleType

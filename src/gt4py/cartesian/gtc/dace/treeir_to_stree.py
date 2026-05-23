@@ -131,7 +131,6 @@ class TreeIRToScheduleTree(eve.NodeVisitor):
         with ContextPushPop(ctx, while_scope):
             self.visit(node.children, ctx=ctx)
 
-    # HEAD
     def visit_For(self, node: tir.For, ctx: Context) -> None:
         # Define the iteration symbol
         ctx.tree.symbols[node.iteration_variable] = dtypes.int32
@@ -227,7 +226,7 @@ def _for_scope_header(node: tir.For) -> dcf.ForScope:
         ),
         itervar=iteration_var,
         init=node.bounds.start,
-        update=f"{iteration_var} + 1",
+        update=f"{iteration_var} + {node.iteration_step}",
         # Unused
         parent=None,  # not Tree parent, CF parent
         dispatch_state=lambda _state: "",
