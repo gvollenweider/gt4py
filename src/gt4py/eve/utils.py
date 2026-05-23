@@ -17,7 +17,6 @@ import dataclasses
 import enum
 import functools
 import hashlib
-import io
 import itertools
 import operator
 import pickle
@@ -47,7 +46,6 @@ from boltons.strutils import (
 
 from . import extended_typing as xtyping
 from .extended_typing import (
-    TYPE_CHECKING,
     Any,
     ArgsOnlyCallable,
     Callable,
@@ -615,11 +613,7 @@ def is_noninstantiable(cls: Type[_T]) -> bool:
     return "__noninstantiable__" in cls.__dict__
 
 
-def content_hash(
-    *args: Any,
-    hash_algorithm: str | xtyping.HashlibAlgorithm | None = None,
-    pickler: type = pickle.Pickler,
-) -> str:
+def content_hash(*args: Any, hash_algorithm: str | xtyping.HashlibAlgorithm | None = None) -> str:
     """Stable content-based hash function using instance serialization data.
 
     It provides a customizable hash function for any kind of data.
@@ -642,52 +636,11 @@ def content_hash(
     else:
         hasher = hash_algorithm
 
-    buf = io.BytesIO()
-    pickler(buf).dump(args)
-
-    hasher.update(buf.getvalue())
+    hasher.update(pickle.dumps(args))
     result = hasher.hexdigest()
     assert isinstance(result, str)
 
     return result
-
-
-def custom_pickler(
-    reducer: Callable[[Any], tuple | types.NotImplementedType],
-    name: str | None = None,
-) -> type[pickle.Pickler]:
-    """
-    Create a custom pickler class using the provided function as reducer override.
-    """
-    pickler = type(
-        name or f"CustomReducePickler_{name or id(reducer)}",
-        (pickle.Pickler,),
-        {"reducer_override": staticmethod(reducer)},
-    )
-
-    return pickler
-
-
-def custom_pickler_from_reducers(
-    custom_reducers: dict[type, Callable[[Any], tuple | types.NotImplementedType]],
-    name: str | None = None,
-) -> type[pickle.Pickler]:
-    """
-    Create a pickler with the provided reducers registered in reducer override.
-
-    Since it uses `functools.singledispatch` for the implementation of the
-    reducer override, the custom reducers are used for the types in the keys
-    AND any of its subclasses. This explicitly deviates from the behavior of
-    the `dispatch_table` dict, to allow easy pickle customization of entire class
-    hierarchies.
-    """
-    reducer = functools.singledispatch(
-        cast(Callable[[Any], tuple | types.NotImplementedType], lambda _: NotImplemented)
-    )
-    for cls, func in custom_reducers.items():
-        reducer.register(cls)(func)
-
-    return custom_pickler(reducer, name=name)
 
 
 ddiff = deepdiff.diff.DeepDiff
@@ -867,10 +820,6 @@ class Namespace(types.SimpleNamespace, Generic[T]):
 
     asdict = as_dict
 
-    if TYPE_CHECKING:
-
-        def __getattr__(self, name: str) -> T: ...
-
 
 class FrozenNamespace(Namespace[T]):
     """An immutable version of :class:`Namespace`.
@@ -908,23 +857,6 @@ class FrozenNamespace(Namespace[T]):
             object.__setattr__(self, "__cached_hash_value__", hash(tuple(self.__dict__.items())))
 
         return self.__cached_hash_value__
-
-
-@dataclasses.dataclass(frozen=True)
-class SequentialIDGenerator:
-    """Simple sequential ID generator."""
-
-    prefix: str = ""
-    counter: Iterator[int] = dataclasses.field(default_factory=itertools.count)
-    #: A string to be used as template for the new ids.
-    #: It should contain the `{prefix}`and `{id}` format keys.
-    format: str = "{prefix}_{id}"
-
-    def __next__(self) -> str:
-        return self.format.format(prefix=self.prefix, id=next(self.counter))
-
-    def next(self) -> str:
-        return self.__next__()
 
 
 @dataclasses.dataclass
@@ -983,6 +915,8 @@ class UIDGenerator:
 
         return self
 
+
+UIDs = UIDGenerator()
 
 # -- Iterators --
 S = TypeVar("S")
