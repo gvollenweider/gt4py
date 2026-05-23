@@ -192,6 +192,8 @@ def gt_propagate_strides_from_access_node(
         processed_nsdfgs: Set of NestedSDFG that were already processed and will be ignored.
             Only specify when you know what your are doing.
     """
+    assert isinstance(state, dace.SDFGState)
+
     if processed_nsdfgs is None:
         # For preventing the case that nested SDFGs are handled multiple time.
         processed_nsdfgs = set()
@@ -631,6 +633,7 @@ def _gt_find_toplevel_data_accesses(
     not_top_level_data: set[str] = set()
 
     for state in sdfg.states():
+        assert isinstance(state, dace.SDFGState)
         scope_dict = state.scope_dict()
         for dnode in state.data_nodes():
             data: str = dnode.data
@@ -639,9 +642,9 @@ def _gt_find_toplevel_data_accesses(
                 # We also check if it was ever found on the top level, this should
                 #  not happen, as everything should go through Maps. But some strange
                 #  DaCe transformation might do it.
-                assert (
-                    data not in top_level_data
-                ), f"Found {data} on the top level and inside a scope."
+                assert data not in top_level_data, (
+                    f"Found {data} on the top level and inside a scope."
+                )
                 not_top_level_data.add(data)
                 continue
 
@@ -656,9 +659,9 @@ def _gt_find_toplevel_data_accesses(
                 continue
 
             # We have found a new data node that is on the top node and is unknown.
-            assert (
-                data not in not_top_level_data
-            ), f"Found {data} on the top level and inside a scope."
+            assert data not in not_top_level_data, (
+                f"Found {data} on the top level and inside a scope."
+            )
             desc: dace_data.Data = dnode.desc(sdfg)
 
             # Check if we only accept arrays

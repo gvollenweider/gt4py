@@ -21,7 +21,7 @@ from gt4py.next import common
 from gt4py.next.ffront import fbuiltins
 from gt4py.next.iterator import ir as itir
 from gt4py.next.iterator.transforms import pass_manager
-from gt4py.next.otf import languages, stages, step_types, workflow
+from gt4py.next.otf import arguments, languages, stages, step_types, workflow
 from gt4py.next.otf.binding import cpp_interface, interface
 from gt4py.next.program_processors.codegens.gtfn.codegen import GTFNCodegen, GTFNIMCodegen
 from gt4py.next.program_processors.codegens.gtfn.gtfn_ir_to_gtfn_im_ir import GTFN_IM_lowering
@@ -85,6 +85,7 @@ class GTFNTranslationStep(
         arg_exprs: list[str] = []
 
         for arg_type, program_param in zip(arg_types, program.params, strict=True):
+            arg_type = arg_type.type_ if isinstance(arg_type, arguments.StaticArg) else arg_type
             # parameter
             parameter = get_param_description(program_param.id, arg_type)
             parameters.append(parameter)
@@ -156,14 +157,12 @@ class GTFNTranslationStep(
     def _preprocess_program(
         self,
         program: itir.Program,
-        offset_provider: common.OffsetProvider,
+        offset_provider: common.OffsetProvider | common.OffsetProviderType,
     ) -> itir.Program:
         apply_common_transforms = functools.partial(
             pass_manager.apply_common_transforms,
             extract_temporaries=True,
             offset_provider=offset_provider,
-            # sid::composite (via hymap) supports assigning from tuple with more elements to tuple with fewer elements
-            unconditionally_collapse_tuples=True,
             symbolic_domain_sizes=self.symbolic_domain_sizes,
         )
 
@@ -184,7 +183,7 @@ class GTFNTranslationStep(
     def generate_stencil_source(
         self,
         program: itir.Program,
-        offset_provider: common.OffsetProvider,
+        offset_provider: common.OffsetProvider | common.OffsetProviderType,
         column_axis: Optional[common.Dimension],
     ) -> str:
         if self.enable_itir_transforms:
@@ -215,8 +214,11 @@ class GTFNTranslationStep(
 
         # handle regular parameters and arguments of the program (i.e. what the user defined in
         #  the program)
+        arg_types = tuple(
+            arg.type_ if isinstance(arg, arguments.StaticArg) else arg for arg in inp.args.args
+        )
         regular_parameters, regular_args_expr = self._process_regular_arguments(
-            program, inp.args.args, inp.args.offset_provider_type
+            program, arg_types, inp.args.offset_provider_type
         )
 
         # handle connectivity parameters and arguments (i.e. what the user provided in the offset
@@ -259,7 +261,6 @@ class GTFNTranslationStep(
             source_code=source_code,
             language=self._language(),
             language_settings=self._language_settings(),
-            implicit_domain=inp.data.implicit_domain,
         )
         return module
 
@@ -310,18 +311,17 @@ class GTFNTranslationStep(
 
     def _not_implemented_for_device_type(self) -> NotImplementedError:
         return NotImplementedError(
-            f"{self.__class__.__name__} is not implemented for "
-            f"device type {self.device_type.name}"
+            f"{self.__class__.__name__} is not implemented for device type {self.device_type.name}"
         )
 
 
-class GTFNTranslationStepFactory(factory.Factory):
+class GTFNTranslationStepFactory(factory.Factory[GTFNTranslationStep]):
     class Meta:
         model = GTFNTranslationStep
 
 
-translate_program_cpu: Final[step_types.TranslationStep] = GTFNTranslationStepFactory()
+translate_program_cpu: Final[step_types.TranslationStep] = GTFNTranslationStepFactory()  # type: ignore[assignment] # factory-boy typing not precise enough
 
-translate_program_gpu: Final[step_types.TranslationStep] = GTFNTranslationStepFactory(
+translate_program_gpu: Final[step_types.TranslationStep] = GTFNTranslationStepFactory(  # type: ignore[assignment] # factory-boy typing not precise enough
     device_type=core_defs.DeviceType.CUDA
 )

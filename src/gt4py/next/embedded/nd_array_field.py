@@ -458,7 +458,7 @@ class NdArrayField(
 
 
 @dataclasses.dataclass(frozen=True)
-class NdArrayConnectivityField(  # type: ignore[misc] # for __ne__, __eq__
+class NdArrayConnectivityField(
     common.Connectivity[common.DimsT, common.DimT],
     NdArrayField[common.DimsT, core_defs.IntegralScalar],
 ):
@@ -480,8 +480,7 @@ class NdArrayConnectivityField(  # type: ignore[misc] # for __ne__, __eq__
         raise NotImplementedError()
 
     @property
-    # type: ignore[override] # TODO(havogt): instead of inheriting from NdArrayField, steal implementation or common base
-    def codomain(self) -> common.DimT:
+    def codomain(self) -> common.DimT:  # type: ignore[override] # TODO(havogt): instead of inheriting from NdArrayField, steal implementation or common base
         return self._codomain
 
     @property
@@ -657,7 +656,10 @@ def _reshuffling_premap(
             conn_map[dim] = _identity_connectivity(new_domain, dim, cls=type(connectivity))
 
     # Take data
-    take_indices = tuple(conn_map[dim].ndarray for dim in data.domain.dims)
+    take_indices = tuple(
+        conn_map[dim].ndarray - data.domain[dim].unit_range.start  # shift to 0-based indexing
+        for dim in data.domain.dims
+    )
     new_buffer = data._ndarray.__getitem__(take_indices)
 
     return data.__class__.from_array(
@@ -758,7 +760,8 @@ def _hyperslice(
     nnz: tuple[core_defs.NDArrayObject, ...] = xp.nonzero(select_mask)
 
     slices = tuple(
-        slice(xp.min(dim_nnz_indices), xp.max(dim_nnz_indices) + 1) for dim_nnz_indices in nnz
+        slice(xp.min(dim_nnz_indices).item(), xp.max(dim_nnz_indices).item() + 1)
+        for dim_nnz_indices in nnz
     )
     hcube = select_mask[tuple(slices)]
     if skip_value is not None:
@@ -970,7 +973,7 @@ def _concat_where(
     return cls_.from_array(result_array, domain=result_domain)
 
 
-NdArrayField.register_builtin_func(experimental.concat_where, _concat_where)  # type: ignore[arg-type]
+NdArrayField.register_builtin_func(experimental.concat_where, _concat_where)  # type: ignore[arg-type] # TODO(havogt): this is still the "old" concat_where, needs to be replaced in a next PR
 
 
 def _make_reduction(
@@ -990,7 +993,7 @@ def _make_reduction(
                 "Reducing a field with more than one local dimension is not supported."
             )
         reduce_dim_index = field.domain.dims.index(axis)
-        current_offset_provider = embedded_context.offset_provider.get(None)
+        current_offset_provider = embedded_context.get_offset_provider(None)
         assert current_offset_provider is not None
         offset_definition = current_offset_provider[
             axis.value

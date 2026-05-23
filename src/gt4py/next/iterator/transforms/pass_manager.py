@@ -12,12 +12,16 @@ from gt4py.eve import utils as eve_utils
 from gt4py.next import common
 from gt4py.next.iterator import ir as itir
 from gt4py.next.iterator.transforms import (
+    concat_where,
+    dead_code_elimination,
     fuse_as_fieldop,
     global_tmps,
     infer_domain,
+    infer_domain_ops,
     inline_dynamic_shifts,
     inline_fundefs,
     inline_lifts,
+    remove_broadcast,
 )
 from gt4py.next.iterator.transforms.collapse_list_get import CollapseListGet
 from gt4py.next.iterator.transforms.collapse_tuple import CollapseTuple
@@ -43,22 +47,20 @@ class GTIRTransform(Protocol):
 def apply_common_transforms(
     ir: itir.Program,
     *,
-    offset_provider=None,  # TODO(havogt): should be replaced by offset_provider_type, but global_tmps currently relies on runtime info
+    # TODO(havogt): should be replaced by `common.OffsetProviderType`, but global_tmps currently
+    #  relies on runtime info or `symbolic_domain_sizes`.
+    offset_provider: common.OffsetProvider | common.OffsetProviderType,
     extract_temporaries=False,
     unroll_reduce=False,
     common_subexpression_elimination=True,
     force_inline_lambda_args=False,
-    unconditionally_collapse_tuples=False,
     #: A dictionary mapping axes names to their length. See :func:`infer_domain.infer_expr` for
     #: more details.
     symbolic_domain_sizes: Optional[dict[str, str]] = None,
-    offset_provider_type: Optional[common.OffsetProviderType] = None,
 ) -> itir.Program:
-    # TODO(havogt): if the runtime `offset_provider` is not passed, we cannot run global_tmps
-    if offset_provider_type is None:
-        offset_provider_type = common.offset_provider_to_type(offset_provider)
-
     assert isinstance(ir, itir.Program)
+
+    offset_provider_type = common.offset_provider_to_type(offset_provider)
 
     tmp_uids = eve_utils.UIDGenerator(prefix="__tmp")
     mergeasfop_uids = eve_utils.UIDGenerator()
@@ -70,24 +72,28 @@ def apply_common_transforms(
     ir = inline_fundefs.prune_unreferenced_fundefs(ir)
     ir = NormalizeShifts().visit(ir)
 
-    # note: this increases the size of the tree
-    # Inline. The domain inference can not handle "user" functions, e.g. `let f = λ(...) → ... in f(...)`
-    ir = InlineLambdas.apply(ir, opcount_preserving=True, force_inline_lambda_args=True)
-    # required in order to get rid of expressions without a domain (e.g. when a tuple element is never accessed)
-    ir = CollapseTuple.apply(
-        ir,
-        enabled_transformations=~CollapseTuple.Transformation.PROPAGATE_TO_IF_ON_TUPLES,
-        uids=collapse_tuple_uids,
-        offset_provider_type=offset_provider_type,
-    )  # type: ignore[assignment]  # always an itir.Program
+    # TODO(tehrengruber): Many iterator test contain lifts that need to be inlined, e.g.
+    #  test_can_deref. We didn't notice previously as FieldOpFusion did this implicitly everywhere.
+    ir = inline_lifts.InlineLifts().visit(ir)
+
+    ir = dead_code_elimination.dead_code_elimination(
+        ir, collapse_tuple_uids=collapse_tuple_uids, offset_provider_type=offset_provider_type
+    )  # domain inference does not support dead-code
     ir = inline_dynamic_shifts.InlineDynamicShifts.apply(
         ir
     )  # domain inference does not support dynamic offsets yet
+    ir = infer_domain_ops.InferDomainOps.apply(ir)
+    ir = concat_where.canonicalize_domain_argument(ir)
+
+    ir = concat_where.expand_tuple_args(ir, offset_provider_type=offset_provider_type)  # type: ignore[assignment]  # always an itir.Program
     ir = infer_domain.infer_program(
         ir,
         offset_provider=offset_provider,
         symbolic_domain_sizes=symbolic_domain_sizes,
     )
+    ir = remove_broadcast.RemoveBroadcast.apply(ir)
+
+    ir = concat_where.transform_to_as_fieldop(ir)
 
     for _ in range(10):
         inlined = ir
@@ -126,19 +132,12 @@ def apply_common_transforms(
 
     if extract_temporaries:
         ir = infer(ir, inplace=True, offset_provider_type=offset_provider_type)
-        ir = global_tmps.create_global_tmps(ir, offset_provider=offset_provider, uids=tmp_uids)
-
-    # Since `CollapseTuple` relies on the type inference which does not support returning tuples
-    # larger than the number of closure outputs as given by the unconditional collapse, we can
-    # only run the unconditional version here instead of in the loop above.
-    if unconditionally_collapse_tuples:
-        ir = CollapseTuple.apply(
+        ir = global_tmps.create_global_tmps(
             ir,
-            ignore_tuple_size=True,
-            uids=collapse_tuple_uids,
-            enabled_transformations=~CollapseTuple.Transformation.PROPAGATE_TO_IF_ON_TUPLES,
-            offset_provider_type=offset_provider_type,
-        )  # type: ignore[assignment]  # always an itir.Program
+            offset_provider=offset_provider,
+            symbolic_domain_sizes=symbolic_domain_sizes,
+            uids=tmp_uids,
+        )
 
     ir = NormalizeShifts().visit(ir)
 
@@ -148,15 +147,15 @@ def apply_common_transforms(
     if unroll_reduce:
         for _ in range(10):
             unrolled = UnrollReduce.apply(ir, offset_provider_type=offset_provider_type)
-            if unrolled == ir:
-                break
-            ir = unrolled  # type: ignore[assignment] # still a `itir.Program`
-            ir = CollapseListGet().visit(ir)
-            ir = NormalizeShifts().visit(ir)
+            unrolled = CollapseListGet().visit(unrolled)
+            unrolled = NormalizeShifts().visit(unrolled)
             # this is required as nested neighbor reductions can contain lifts, e.g.,
             # `neighbors(V2Eₒ, ↑f(...))`
-            ir = inline_lifts.InlineLifts().visit(ir)
-            ir = NormalizeShifts().visit(ir)
+            unrolled = inline_lifts.InlineLifts().visit(unrolled)
+            unrolled = NormalizeShifts().visit(unrolled)
+            if unrolled == ir:
+                break
+            ir = unrolled
         else:
             raise RuntimeError("Reduction unrolling failed.")
 
@@ -171,16 +170,19 @@ def apply_common_transforms(
 def apply_fieldview_transforms(
     ir: itir.Program, *, offset_provider: common.OffsetProvider
 ) -> itir.Program:
+    offset_provider_type = common.offset_provider_to_type(offset_provider)
+
     ir = inline_fundefs.InlineFundefs().visit(ir)
     ir = inline_fundefs.prune_unreferenced_fundefs(ir)
-    ir = InlineLambdas.apply(ir, opcount_preserving=True, force_inline_lambda_args=True)
-    ir = CollapseTuple.apply(
-        ir,
-        enabled_transformations=~CollapseTuple.Transformation.PROPAGATE_TO_IF_ON_TUPLES,
-        offset_provider_type=common.offset_provider_to_type(offset_provider),
-    )  # type: ignore[assignment] # type is still `itir.Program`
+    ir = dead_code_elimination.dead_code_elimination(ir, offset_provider_type=offset_provider_type)
     ir = inline_dynamic_shifts.InlineDynamicShifts.apply(
         ir
     )  # domain inference does not support dynamic offsets yet
+
+    ir = infer_domain_ops.InferDomainOps.apply(ir)
+    ir = concat_where.canonicalize_domain_argument(ir)
+    ir = ConstantFolding.apply(ir)  # type: ignore[assignment]  # always an itir.Program
+
     ir = infer_domain.infer_program(ir, offset_provider=offset_provider)
+    ir = remove_broadcast.RemoveBroadcast.apply(ir)
     return ir

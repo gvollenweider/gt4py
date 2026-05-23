@@ -277,14 +277,13 @@ def test_computation() -> None:
             )
         )
     )
-    print(result)
     match = re.match(
         (
             r"import numbers\n"
             r"from typing import Tuple\n+"
             r"import numpy as np\n"
             r"from gt4py.cartesian.gtc import ufuncs\n+"
-            r"class Field:\n"
+            r"from gt4py.cartesian.utils import Field\n"
             r"(.*\n)+"
             r"def run\(\*, a, b, _domain_, _origin_\):\n"
             r"\n?"
@@ -326,7 +325,6 @@ def test_variable_read_outside_bounds(tmp_path) -> None:
 
     This tests whether that is appropriately clipped to support that case by constructing
     `a = b[0, 0, index]` where the read is outside bounds.
-
     """
     computation = ComputationFactory(
         vertical_passes__0__body__0__body__0=VectorAssignFactory(

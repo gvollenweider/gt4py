@@ -15,7 +15,11 @@ from gt4py.eve import utils as eve_utils
 from gt4py.eve.concepts import SymbolName
 from gt4py.next import common
 from gt4py.next.iterator import ir as itir
-from gt4py.next.iterator.ir_utils import common_pattern_matcher as cpm, ir_makers as im
+from gt4py.next.iterator.ir_utils import (
+    common_pattern_matcher as cpm,
+    ir_makers as im,
+    misc as ir_utils_misc,
+)
 from gt4py.next.iterator.type_system import inference as itir_type_inference
 from gt4py.next.otf import cpp_utils
 from gt4py.next.program_processors.codegens.gtfn.gtfn_ir import (
@@ -78,24 +82,6 @@ def _get_domains(nodes: Iterable[itir.Stmt]) -> Iterable[itir.FunCall]:
     for node in nodes:
         result |= node.walk_values().if_isinstance(itir.SetAt).getattr("domain").to_set()
     return result
-
-
-def _extract_grid_type(domain: itir.FunCall) -> common.GridType:
-    if domain.fun == itir.SymRef(id="cartesian_domain"):
-        return common.GridType.CARTESIAN
-    else:
-        assert domain.fun == itir.SymRef(id="unstructured_domain")
-        return common.GridType.UNSTRUCTURED
-
-
-def _get_gridtype(body: list[itir.Stmt]) -> common.GridType:
-    domains = _get_domains(body)
-    grid_types = {_extract_grid_type(d) for d in domains}
-    if len(grid_types) != 1:
-        raise ValueError(
-            f"Found 'set_at' with more than one 'GridType': '{grid_types}'. This is currently not supported."
-        )
-    return grid_types.pop()
 
 
 def _name_from_named_range(named_range_call: itir.FunCall) -> str:
@@ -338,7 +324,7 @@ class GTFN_lowering(eve.NodeTranslator, eve.VisitorWithSymbolTableTrait):
             raise TypeError(f"Expected a 'Program', got '{type(node).__name__}'.")
 
         node = itir_type_inference.infer(node, offset_provider_type=offset_provider_type)
-        grid_type = _get_gridtype(node.body)
+        grid_type = ir_utils_misc.grid_type_from_program(node)
         if grid_type == common.GridType.UNSTRUCTURED:
             node = _CannonicalizeUnstructuredDomain.apply(node)
         return cls(
@@ -485,6 +471,14 @@ class GTFN_lowering(eve.NodeTranslator, eve.VisitorWithSymbolTableTrait):
             tagged_sizes=sizes, tagged_offsets=domain_offsets, connectivities=connectivities
         )
 
+    def _visit_get_domain_range(self, node: itir.FunCall, **kwargs: Any) -> Node:
+        field, dim = node.args
+
+        return FunCall(
+            fun=SymRef(id="get_domain_range"),
+            args=[self.visit(field, **kwargs), self.visit(dim, **kwargs)],
+        )
+
     def visit_FunCall(self, node: itir.FunCall, **kwargs: Any) -> Node:
         if isinstance(node.fun, itir.SymRef):
             if node.fun.id in self._unary_op_map:
@@ -604,8 +598,12 @@ class GTFN_lowering(eve.NodeTranslator, eve.VisitorWithSymbolTableTrait):
         if _is_tuple_of_ref_or_literal(node.expr):
             node.expr = im.as_fieldop("deref", node.domain)(node.expr)
 
-        assert cpm.is_applied_as_fieldop(node.expr)
-        stencil = node.expr.fun.args[0]  # type: ignore[attr-defined] # checked in assert
+        itir_projector, extracted_expr = ir_utils_misc.extract_projector(node.expr)
+        projector = self.visit(itir_projector, **kwargs) if itir_projector is not None else None
+        node.expr = extracted_expr
+
+        assert cpm.is_applied_as_fieldop(node.expr), node.expr
+        stencil = node.expr.fun.args[0]
         domain = node.domain
         inputs = node.expr.args
         lowered_inputs = []
@@ -636,7 +634,11 @@ class GTFN_lowering(eve.NodeTranslator, eve.VisitorWithSymbolTableTrait):
             scan_lambda = self.visit(stencil.args[0], **kwargs)
             forward = _bool_from_literal(stencil.args[1])
             scan_def = ScanPassDefinition(
-                id=scan_id, params=scan_lambda.params, expr=scan_lambda.expr, forward=forward
+                id=scan_id,
+                params=scan_lambda.params,
+                expr=scan_lambda.expr,
+                forward=forward,
+                projector=projector,
             )
             extracted_functions.append(scan_def)
             scan = Scan(
@@ -653,6 +655,7 @@ class GTFN_lowering(eve.NodeTranslator, eve.VisitorWithSymbolTableTrait):
                 args=[self._visit_output_argument(node.target), *lowered_inputs],
                 axis=SymRef(id=column_axis.value),
             )
+        assert projector is None  # only scans have projectors
         return StencilExecution(
             stencil=self.visit(
                 stencil,

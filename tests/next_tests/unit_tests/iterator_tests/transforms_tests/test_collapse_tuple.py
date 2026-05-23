@@ -5,11 +5,17 @@
 #
 # Please, refer to the LICENSE file in the root directory.
 # SPDX-License-Identifier: BSD-3-Clause
+import pytest
 
+from gt4py.next import common
 from gt4py.next.iterator.ir_utils import ir_makers as im
 from gt4py.next.iterator.transforms.collapse_tuple import CollapseTuple
+from gt4py.next.iterator.type_system import type_specifications as it_ts
 from gt4py.next.type_system import type_specifications as ts
-from next_tests.unit_tests.iterator_tests.test_type_inference import int_type
+
+
+int_type = ts.ScalarType(kind=ts.ScalarKind.INT32)
+Vertex = common.Dimension(value="Vertex", kind=common.DimensionKind.HORIZONTAL)
 
 
 def test_simple_make_tuple_tuple_get():
@@ -86,18 +92,6 @@ def test_incompatible_size_make_tuple_tuple_get():
     assert actual == testee  # did nothing
 
 
-def test_merged_with_smaller_outer_size_make_tuple_tuple_get():
-    testee = im.make_tuple(im.tuple_get(0, im.make_tuple("first", "second")))
-    actual = CollapseTuple.apply(
-        testee,
-        ignore_tuple_size=True,
-        enabled_transformations=CollapseTuple.Transformation.COLLAPSE_MAKE_TUPLE_TUPLE_GET,
-        allow_undeclared_symbols=True,
-        within_stencil=False,
-    )
-    assert actual == im.make_tuple("first", "second")
-
-
 def test_simple_tuple_get_make_tuple():
     expected = im.ref("bar")
     testee = im.tuple_get(1, im.make_tuple("foo", expected))
@@ -111,7 +105,27 @@ def test_simple_tuple_get_make_tuple():
     assert expected == actual
 
 
-def test_propagate_tuple_get():
+@pytest.mark.parametrize("fun", ["if_", "concat_where"])
+def test_propagate_tuple_get(fun):
+    testee = im.tuple_get(
+        0, im.call(fun)("cond", im.make_tuple("el1", "el2"), im.make_tuple("el1", "el2"))
+    )
+    expected = im.call(fun)(
+        "cond",
+        im.tuple_get(0, im.make_tuple("el1", "el2")),
+        im.tuple_get(0, im.make_tuple("el1", "el2")),
+    )
+    actual = CollapseTuple.apply(
+        testee,
+        remove_letified_make_tuple_elements=False,
+        enabled_transformations=CollapseTuple.Transformation.PROPAGATE_TUPLE_GET,
+        allow_undeclared_symbols=True,
+        within_stencil=False,
+    )
+    assert expected == actual
+
+
+def test_propagate_tuple_get_let():
     expected = im.let(("el1", 1), ("el2", 2))(im.tuple_get(0, im.make_tuple("el1", "el2")))
     testee = im.tuple_get(0, im.let(("el1", 1), ("el2", 2))(im.make_tuple("el1", "el2")))
     actual = CollapseTuple.apply(
@@ -125,8 +139,11 @@ def test_propagate_tuple_get():
 
 
 def test_letify_make_tuple_elements():
-    # anything that is not trivial, i.e. a SymRef, works here
-    el1, el2 = im.let("foo", "foo")("foo"), im.let("bar", "bar")("bar")
+    fun_type = ts.FunctionType(
+        pos_only_args=[], pos_or_kw_args={}, kw_only_args={}, returns=int_type
+    )
+    # anything that is not trivial, works here
+    el1, el2 = im.call(im.ref("foo", fun_type))(), im.call(im.ref("bar", fun_type))()
     testee = im.make_tuple(el1, el2)
     expected = im.let(("__ct_el_1", el1), ("__ct_el_2", el2))(
         im.make_tuple("__ct_el_1", "__ct_el_2")
@@ -207,9 +224,26 @@ def test_propagate_to_if_on_tuples_with_let():
     assert actual == expected
 
 
-def test_propagate_nested_lift():
+def test_propagate_nested_let():
     testee = im.let("a", im.let("b", 1)("a_val"))("a")
     expected = im.let("b", 1)(im.let("a", "a_val")("a"))
+    actual = CollapseTuple.apply(
+        testee,
+        remove_letified_make_tuple_elements=False,
+        enabled_transformations=CollapseTuple.Transformation.PROPAGATE_NESTED_LET,
+        allow_undeclared_symbols=True,
+        within_stencil=False,
+    )
+    assert actual == expected
+
+
+def test_propagate_nested_let_with_collision():
+    testee = im.let(("a", im.let("c", 1)("c")), ("b", im.let("c", 2)("c")))(
+        im.call("plus")("a", "b")
+    )
+    expected = im.let(("c", 1), ("c_", 2))(
+        im.let(("a", "c"), ("b", "c_"))(im.call("plus")("a", "b"))
+    )
     actual = CollapseTuple.apply(
         testee,
         remove_letified_make_tuple_elements=False,
@@ -304,6 +338,84 @@ def test_if_make_tuple_reorder_cps_external():
         im.make_tuple(external_ref, im.tuple_get(1, "t"), im.tuple_get(0, "t"))
     )
     expected = im.if_(True, im.make_tuple(external_ref, 2, 1), im.make_tuple(external_ref, 4, 3))
+    actual = CollapseTuple.apply(
+        testee,
+        enabled_transformations=~CollapseTuple.Transformation.PROPAGATE_TO_IF_ON_TUPLES,
+        allow_undeclared_symbols=True,
+        within_stencil=False,
+    )
+    assert actual == expected
+
+
+def test_flatten_as_fieldop_args():
+    it_type = it_ts.IteratorType(
+        position_dims=[],
+        defined_dims=[],
+        element_type=ts.TupleType(types=[int_type, int_type]),
+    )
+    testee = im.as_fieldop(im.lambda_(im.sym("it", it_type))(im.tuple_get(1, im.deref("it"))))(
+        im.make_tuple(1, 2)
+    )
+    expected = im.as_fieldop(
+        im.lambda_("__ct_flat_el_0_it", "__ct_flat_el_1_it")(im.deref("__ct_flat_el_1_it"))
+    )(1, 2)
+    actual = CollapseTuple.apply(
+        testee,
+        enabled_transformations=~CollapseTuple.Transformation.PROPAGATE_TO_IF_ON_TUPLES,
+        allow_undeclared_symbols=True,
+        within_stencil=False,
+    )
+    assert actual == expected
+
+
+def test_flatten_as_fieldop_args_nested():
+    it_type = it_ts.IteratorType(
+        position_dims=[],
+        defined_dims=[],
+        element_type=ts.TupleType(
+            types=[
+                int_type,
+                ts.TupleType(types=[int_type, int_type]),
+            ]
+        ),
+    )
+    testee = im.as_fieldop(
+        im.lambda_(im.sym("it", it_type))(im.tuple_get(1, im.tuple_get(1, im.deref("it"))))
+    )(im.make_tuple(1, im.make_tuple(2, 3)))
+    expected = im.as_fieldop(
+        im.lambda_("__ct_flat_el_0_it", "__ct_flat_el_1_0_it", "__ct_flat_el_1_1_it")(
+            im.deref("__ct_flat_el_1_1_it")
+        )
+    )(1, 2, 3)
+    actual = CollapseTuple.apply(
+        testee,
+        enabled_transformations=~CollapseTuple.Transformation.PROPAGATE_TO_IF_ON_TUPLES,
+        allow_undeclared_symbols=True,
+        within_stencil=False,
+    )
+    assert actual == expected
+
+
+def test_flatten_as_fieldop_args_scan():
+    it_type = it_ts.IteratorType(
+        position_dims=[],
+        defined_dims=[],
+        element_type=ts.TupleType(types=[int_type, int_type]),
+    )
+    testee = im.as_fieldop(
+        im.scan(
+            im.lambda_("state", im.sym("it", it_type))(im.tuple_get(1, im.deref("it"))), True, 0
+        )
+    )(im.make_tuple(1, 2))
+    expected = im.as_fieldop(
+        im.scan(
+            im.lambda_("state", "__ct_flat_el_0_it", "__ct_flat_el_1_it")(
+                im.deref("__ct_flat_el_1_it")
+            ),
+            True,
+            0,
+        )
+    )(1, 2)
     actual = CollapseTuple.apply(
         testee,
         enabled_transformations=~CollapseTuple.Transformation.PROPAGATE_TO_IF_ON_TUPLES,

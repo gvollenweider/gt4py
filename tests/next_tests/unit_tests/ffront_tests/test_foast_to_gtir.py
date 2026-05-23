@@ -38,6 +38,7 @@ from gt4py.next.ffront.func_to_foast import FieldOperatorParser
 from gt4py.next.iterator.ir_utils import ir_makers as im
 from gt4py.next.iterator.transforms import inline_lambdas
 from gt4py.next.type_system import type_specifications as ts, type_translation
+from gt4py.next.iterator import ir as itir
 
 
 Edge = gtx.Dimension("Edge")
@@ -704,7 +705,7 @@ def test_compare_chain():
     def foo(
         a: gtx.Field[[TDim], float64], b: gtx.Field[[TDim], float64], c: gtx.Field[[TDim], float64]
     ) -> gtx.Field[[TDim], bool]:
-        return a > b > c
+        return (a > b) & (b > c)
 
     parsed = FieldOperatorParser.apply_to_function(foo)
     lowered = FieldOperatorLowering.apply(parsed)
@@ -763,7 +764,7 @@ def test_reduction_lowering_neighbor_sum():
     reference = im.op_as_fieldop(
         im.reduce(
             "plus",
-            im.literal(value="0", typename="float64"),
+            im.literal(value="0", type_="float64"),
         )
     )(im.as_fieldop_neighbors("V2E", "edge_f"))
 
@@ -780,7 +781,7 @@ def test_reduction_lowering_max_over():
     reference = im.op_as_fieldop(
         im.reduce(
             "maximum",
-            im.literal(value=str(np.finfo(np.float64).min), typename="float64"),
+            im.literal(value=str(np.finfo(np.float64).min), type_="float64"),
         )
     )(im.as_fieldop_neighbors("V2E", "edge_f"))
 
@@ -797,7 +798,7 @@ def test_reduction_lowering_min_over():
     reference = im.op_as_fieldop(
         im.reduce(
             "minimum",
-            im.literal(value=str(np.finfo(np.float64).max), typename="float64"),
+            im.literal(value=str(np.finfo(np.float64).max), type_="float64"),
         )
     )(im.as_fieldop_neighbors("V2E", "edge_f"))
 
@@ -824,7 +825,7 @@ def test_reduction_lowering_expr():
         im.op_as_fieldop(
             im.reduce(
                 "plus",
-                im.literal(value="0", typename="float64"),
+                im.literal(value="0", type_="float64"),
             )
         )(mapped)
     )
@@ -901,21 +902,27 @@ def test_builtin_bool_constructors():
 
 def test_broadcast():
     def foo(inp: gtx.Field[[TDim], float64]):
-        return broadcast(inp, (UDim, TDim))
+        return broadcast(inp, (TDim, UDim))
 
     parsed = FieldOperatorParser.apply_to_function(foo)
     lowered = FieldOperatorLowering.apply(parsed)
 
     assert lowered.id == "foo"
-    assert lowered.expr == im.as_fieldop("deref")(im.ref("inp"))
+    assert lowered.expr == im.call("broadcast")(
+        im.ref("inp"),
+        im.make_tuple(*(itir.AxisLiteral(value=dim.value, kind=dim.kind) for dim in (TDim, UDim))),
+    )
 
 
 def test_scalar_broadcast():
     def foo():
-        return broadcast(1, (UDim, TDim))
+        return broadcast(1, (TDim, UDim))
 
     parsed = FieldOperatorParser.apply_to_function(foo)
     lowered = FieldOperatorLowering.apply(parsed)
 
     assert lowered.id == "foo"
-    assert lowered.expr == im.as_fieldop("deref")(1)
+    assert lowered.expr == im.call("broadcast")(
+        1,
+        im.make_tuple(*(itir.AxisLiteral(value=dim.value, kind=dim.kind) for dim in (TDim, UDim))),
+    )

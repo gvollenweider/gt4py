@@ -23,7 +23,6 @@ import operator
 import pickle
 import pprint
 import re
-import sys
 import types
 import typing
 import uuid
@@ -264,7 +263,7 @@ _K = TypeVar("_K")
 _V = TypeVar("_V")
 
 
-class CustomDefaultDictBase(collections.defaultdict[_K, _V]):
+class CustomDefaultDictBase(collections.UserDict[_K, _V]):
     """
     Base dict-like class using a value factory to compute default values per key.
 
@@ -285,18 +284,16 @@ class CustomDefaultDictBase(collections.defaultdict[_K, _V]):
 
     """
 
-    __slots__ = ()
-
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-
-    def __missing__(self, key: _K) -> _V:
-        self[key] = value = self.value_factory(key)
-        return value
-
     @abc.abstractmethod
     def value_factory(self, key: _K) -> _V:
         raise NotImplementedError
+
+    def __getitem__(self, key: _K) -> _V:
+        try:
+            return super().__getitem__(key)
+        except KeyError:
+            self.data[key] = (value := self.value_factory(key))
+            return value
 
 
 class CustomMapping(collections.abc.MutableMapping[_K, _V]):
@@ -355,10 +352,6 @@ class CustomMapping(collections.abc.MutableMapping[_K, _V]):
             + ", ".join(f"{self.key_map[k]!r}: {self.value_map[k]!r}" for k in self.key_map)
             + "}"
         )
-
-    def internal_key(self, key: _K) -> int:
-        """Return the internal key used to store the value associated with `key`."""
-        return self.key_func(key)
 
 
 class HashableBy(Generic[_T]):
@@ -468,15 +461,6 @@ def optional_lru_cache(
     return _decorator(func) if func is not None else _decorator
 
 
-class EqualityBy(HashableBy):
-    """Use a hash function as the definition of equality for the wrapped object."""
-
-    __hash__ = HashableBy.__hash__
-
-    def __eq__(self, other: Any) -> bool:
-        return self is other or hash(self) == hash(other)
-
-
 # TODO(egparedes): it would be more efficient to implement the caching logic
 # here instead of relying on `functools.lru_cache` and wrapping/unwrapping the
 # arguments.
@@ -490,8 +474,7 @@ def lru_cache(
     """
     Wrap :func:`functools.lru_cache` but allow customizing the cache key.
 
-    Be careful, with custom `key` functions, `key(obj1) == key(obj2)` automatically
-    implies `obj1 == obj2`, i.e. they are considered equal.
+    Be careful: `key(obj1) == key(obj2)` must imply `obj1 == obj2`.
 
     >>> @lru_cache(key=id)
     ... def func(x):
@@ -518,13 +501,12 @@ def lru_cache(
             @functools.wraps(func)
             def inner(*args, **kwargs):  # type: ignore[no-untyped-def]  # cast below restores type info
                 return cached_func(
-                    *(EqualityBy(key, arg) for arg in args),
-                    **{k: EqualityBy(key, arg) for k, arg in kwargs.items()},
+                    *(hashable_by(key, arg) for arg in args),
+                    **{k: hashable_by(key, arg) for k, arg in kwargs.items()},
                 )
 
             inner.cache_parameters = cached_func.cache_parameters  # type: ignore[attr-defined]  # mypy not aware of functools.lru_cache behavior
             inner.cache_info = cached_func.cache_info  # type: ignore[attr-defined]  # mypy not aware of functools.lru_cache behavior
-            inner.cache_clear = cached_func.cache_clear  # type: ignore[attr-defined]  # mypy not aware of functools.cache_clear behavior
 
             return typing.cast(Callable[_P, _T], inner)
 
@@ -949,21 +931,9 @@ class SequentialIDGenerator:
 class UIDGenerator:
     """Simple unique id generator using different methods."""
 
-    prefix: Optional[str] = (
-        dataclasses.field(default=None, kw_only=True)
-        if sys.version_info >= (3, 10)
-        else dataclasses.field(default=None)
-    )
-    width: Optional[int] = (
-        dataclasses.field(default=None, kw_only=True)
-        if sys.version_info >= (3, 10)
-        else dataclasses.field(default=None)
-    )
-    warn_unsafe: Optional[bool] = (
-        dataclasses.field(default=None, kw_only=True)
-        if sys.version_info >= (3, 10)
-        else dataclasses.field(default=None)
-    )
+    prefix: Optional[str] = dataclasses.field(default=None, kw_only=True)
+    width: Optional[int] = dataclasses.field(default=None, kw_only=True)
+    warn_unsafe: Optional[bool] = dataclasses.field(default=None, kw_only=True)
 
     _counter: Iterator[int] = dataclasses.field(
         default_factory=functools.partial(itertools.count, 1), init=False

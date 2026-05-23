@@ -24,14 +24,16 @@ from gt4py.next.ffront import (
     stages as ffront_stages,
     type_specifications as ts_ffront,
 )
+from gt4py.next.ffront.foast_passes import utils as foast_utils
 from gt4py.next.ffront.stages import AOT_FOP, FOP
 from gt4py.next.iterator import ir as itir
 from gt4py.next.iterator.ir_utils import ir_makers as im
+from gt4py.next.iterator.transforms import constant_folding
 from gt4py.next.otf import toolchain, workflow
-from gt4py.next.type_system import type_info, type_specifications as ts
+from gt4py.next.type_system import type_info, type_specifications as ts, type_translation as tt
 
 
-def foast_to_gtir(inp: ffront_stages.FoastOperatorDefinition) -> itir.Expr:
+def foast_to_gtir(inp: ffront_stages.FoastOperatorDefinition) -> itir.FunctionDefinition:
     """
     Lower a FOAST field operator node to GTIR.
 
@@ -40,7 +42,7 @@ def foast_to_gtir(inp: ffront_stages.FoastOperatorDefinition) -> itir.Expr:
     return FieldOperatorLowering.apply(inp.foast_node)
 
 
-def foast_to_gtir_factory(cached: bool = True) -> workflow.Workflow[FOP, itir.Expr]:
+def foast_to_gtir_factory(cached: bool = True) -> workflow.Workflow[FOP, itir.FunctionDefinition]:
     """Wrap `foast_to_gtir` into a chainable and, optionally, cached workflow step."""
     wf = foast_to_gtir
     if cached:
@@ -48,7 +50,9 @@ def foast_to_gtir_factory(cached: bool = True) -> workflow.Workflow[FOP, itir.Ex
     return wf
 
 
-def adapted_foast_to_gtir_factory(**kwargs: Any) -> workflow.Workflow[AOT_FOP, itir.Expr]:
+def adapted_foast_to_gtir_factory(
+    **kwargs: Any,
+) -> workflow.Workflow[AOT_FOP, itir.FunctionDefinition]:
     """Wrap the `foast_to_gtir` workflow step into an adapter to fit into backend transform workflows."""
     return toolchain.StripArgsAdapter(foast_to_gtir_factory(**kwargs))
 
@@ -93,8 +97,10 @@ class FieldOperatorLowering(eve.PreserveLocationVisitor, eve.NodeTranslator):
     )
 
     @classmethod
-    def apply(cls, node: foast.LocatedNode) -> itir.Expr:
-        return cls().visit(node)
+    def apply(cls, node: foast.LocatedNode) -> itir.FunctionDefinition:
+        result = cls().visit(node)
+        assert isinstance(result, itir.FunctionDefinition)
+        return result
 
     def visit_FunctionDefinition(
         self, node: foast.FunctionDefinition, **kwargs: Any
@@ -224,11 +230,27 @@ class FieldOperatorLowering(eve.PreserveLocationVisitor, eve.NodeTranslator):
     def visit_Symbol(self, node: foast.Symbol, **kwargs: Any) -> itir.Sym:
         return im.sym(node.id)
 
-    def visit_Name(self, node: foast.Name, **kwargs: Any) -> itir.SymRef:
+    def visit_Name(self, node: foast.Name, **kwargs: Any) -> itir.SymRef | itir.AxisLiteral:
+        if isinstance(node.type, ts.DimensionType):
+            return itir.AxisLiteral(value=node.type.dim.value, kind=node.type.dim.kind)
         return im.ref(node.id)
 
+    def visit_Attribute(self, node: foast.Attribute, **kwargs: Any) -> itir.AxisLiteral:
+        if isinstance(node.type, ts.DimensionType):
+            return itir.AxisLiteral(value=node.type.dim.value, kind=node.type.dim.kind)
+        raise AssertionError(
+            "Unexpected attribute access. At this point all accesses should have been removed by `ClosureVarFolding`."
+        )
+
     def visit_Subscript(self, node: foast.Subscript, **kwargs: Any) -> itir.Expr:
-        return im.tuple_get(node.index, self.visit(node.value, **kwargs))
+        if isinstance(node.index.type, ts.IndexType):
+            # `field[LocalDim(42)]`
+            assert isinstance(node.index, foast.Call)
+            assert isinstance(node.index.args[0], foast.Constant)
+            return im.as_fieldop_deref_list_get(
+                node.index.args[0].value, self.visit(node.value, **kwargs)
+            )
+        return im.tuple_get(foast_utils.expr_to_index(node.index), self.visit(node.value, **kwargs))
 
     def visit_TupleExpr(self, node: foast.TupleExpr, **kwargs: Any) -> itir.Expr:
         return im.make_tuple(*[self.visit(el, **kwargs) for el in node.elts])
@@ -269,14 +291,17 @@ class FieldOperatorLowering(eve.PreserveLocationVisitor, eve.NodeTranslator):
         for arg in node.args:
             match arg:
                 # `field(Off[idx])`
-                case foast.Subscript(value=foast.Name(id=offset_name), index=int(offset_index)):
+                case foast.Subscript(value=foast.Name(id=offset_name), index=index):
+                    # Constant folding to a `Literal` ensures that `index` becomes an `OffsetLiteral`,
+                    # which can be generated as compile-time value backend code.
+                    new_index = constant_folding.ConstantFolding.apply(self.visit(index, **kwargs))
+                    assert isinstance(new_index, itir.Literal)
                     current_expr = im.as_fieldop(
-                        im.lambda_("__it")(im.deref(im.shift(offset_name, offset_index)("__it")))
+                        im.lambda_("__it")(im.deref(im.shift(offset_name, new_index)("__it")))
                     )(current_expr)
                 # `field(Dim + idx)`
                 case foast.BinOp(
-                    op=dialect_ast_enums.BinaryOperator.ADD
-                    | dialect_ast_enums.BinaryOperator.SUB,
+                    op=dialect_ast_enums.BinaryOperator.ADD | dialect_ast_enums.BinaryOperator.SUB,
                     left=foast.Name(id=dimension),  # TODO(tehrengruber): use type of lhs
                     right=foast.Constant(value=offset_index),
                 ):
@@ -331,7 +356,7 @@ class FieldOperatorLowering(eve.PreserveLocationVisitor, eve.NodeTranslator):
         ):
             visitor = getattr(self, f"_visit_{node.func.id}")
             return visitor(node, **kwargs)
-        elif isinstance(node.func, foast.Name) and node.func.id in fbuiltins.TYPE_BUILTIN_NAMES:
+        elif isinstance(node.func, foast.Name) and isinstance(node.func.type, ts.ConstructorType):
             return self._visit_type_constr(node, **kwargs)
         elif isinstance(
             node.func.type,
@@ -340,10 +365,7 @@ class FieldOperatorLowering(eve.PreserveLocationVisitor, eve.NodeTranslator):
             # ITIR has no support for keyword arguments. Instead, we concatenate both positional
             # and keyword arguments and use the unique order as given in the function signature.
             lowered_args, lowered_kwargs = type_info.canonicalize_arguments(
-                node.func.type,
-                self.visit(node.args, **kwargs),
-                self.visit(node.kwargs, **kwargs),
-                use_signature_ordering=True,
+                node.func.type, self.visit(node.args, **kwargs), self.visit(node.kwargs, **kwargs)
             )
             result = im.call(self.visit(node.func, **kwargs))(
                 *lowered_args, *lowered_kwargs.values()
@@ -356,11 +378,16 @@ class FieldOperatorLowering(eve.PreserveLocationVisitor, eve.NodeTranslator):
         )
 
     def _visit_astype(self, node: foast.Call, **kwargs: Any) -> itir.Expr:
-        assert len(node.args) == 2 and isinstance(node.args[1], foast.Name)
-        obj, new_type = self.visit(node.args[0], **kwargs), node.args[1].id
+        # Note: the type to convert to is uniquely identified by its GT4Py type (`ConstructorType`),
+        # not by e.g. its name.
+        assert len(node.args) == 2
+        assert isinstance(node.args[1].type, ts.ConstructorType)
+        obj = self.visit(node.args[0], **kwargs)
+        new_type = node.args[1].type.definition.returns
+        assert isinstance(new_type, ts.ScalarType)
 
         def create_cast(expr: itir.Expr, t: tuple[ts.TypeSpec]) -> itir.FunCall:
-            return _map(im.lambda_("val")(im.cast_("val", str(new_type))), (expr,), t)
+            return _map(im.lambda_("val")(im.cast_("val", new_type)), (expr,), t)
 
         if not isinstance(node.type, ts.TupleType):  # to keep the IR simpler
             return create_cast(obj, (node.args[0].type,))
@@ -394,11 +421,12 @@ class FieldOperatorLowering(eve.PreserveLocationVisitor, eve.NodeTranslator):
 
         return im.let(cond_symref_name, cond_)(result)
 
-    _visit_concat_where = _visit_where  # TODO(havogt): upgrade concat_where
+    def _visit_concat_where(self, node: foast.Call, **kwargs: Any) -> itir.FunCall:
+        domain, true_branch, false_branch = self.visit(node.args, **kwargs)
+        return im.concat_where(domain, true_branch, false_branch)
 
     def _visit_broadcast(self, node: foast.Call, **kwargs: Any) -> itir.FunCall:
-        expr = self.visit(node.args[0], **kwargs)
-        return im.as_fieldop(im.ref("deref"))(expr)
+        return im.call("broadcast")(*self.visit(node.args, **kwargs))
 
     def _visit_math_built_in(self, node: foast.Call, **kwargs: Any) -> itir.FunCall:
         return self._lower_and_map(self.visit(node.func, **kwargs), *node.args)
@@ -431,23 +459,38 @@ class FieldOperatorLowering(eve.PreserveLocationVisitor, eve.NodeTranslator):
         return self._make_reduction_expr(node, "minimum", init_expr, **kwargs)
 
     def _visit_type_constr(self, node: foast.Call, **kwargs: Any) -> itir.Expr:
-        el = node.args[0]
-        node_kind = self.visit(node.type).kind.name.lower()
-        source_type = {**fbuiltins.BUILTINS, "string": str}[el.type.__str__().lower()]
-        target_type = fbuiltins.BUILTINS[node_kind]
+        # Note: the type to convert to is uniquely identified by its GT4Py type (`ConstructorType`),
+        # not by e.g. its name.
+        type_constructor = node.func
+        assert isinstance(type_constructor.type, ts.ConstructorType)
 
-        if isinstance(el, foast.Constant):
-            val = source_type(el.value)
-        elif isinstance(el, foast.UnaryOp) and isinstance(el.operand, foast.Constant):
-            operand = source_type(el.operand.value)
-            val = eval(f"lambda arg: {el.op}arg")(operand)
+        value = node.args[0]
+
+        source_type = value.type
+        assert isinstance(source_type, ts.ScalarType)
+        target_type = type_constructor.type.definition.returns
+        assert isinstance(target_type, ts.ScalarType)
+
+        if isinstance(value, foast.Constant):
+            val = (
+                value.value
+                if source_type.kind == ts.ScalarKind.STRING
+                else tt.unsafe_cast_to(value.value, source_type)
+            )
+        elif isinstance(value, foast.UnaryOp) and isinstance(value.operand, foast.Constant):
+            operand = (
+                value.operand.value
+                if source_type.kind == ts.ScalarKind.STRING
+                else tt.unsafe_cast_to(value.operand.value, source_type)
+            )
+            val = eval(f"lambda arg: {value.op}arg")(operand)
         else:
             raise FieldOperatorLoweringError(
                 f"Type cast only supports literal arguments, {node.type} not supported."
             )
-        val = target_type(val)
+        val = tt.unsafe_cast_to(val, target_type)
 
-        return im.literal(str(val), node_kind)
+        return im.literal(str(val), target_type)
 
     def _make_literal(self, val: Any, type_: ts.TypeSpec) -> itir.Expr:
         if isinstance(type_, ts.TupleType):
@@ -477,7 +520,7 @@ def _map(
     Mapping includes making the operation an `as_fieldop` (first kind of mapping), but also `itir.map_`ing lists.
     """
     if all(
-        isinstance(t, ts.ScalarType)
+        isinstance(t, (ts.ScalarType, ts.DimensionType, ts.DomainType))
         for arg_type in original_arg_types
         for t in type_info.primitive_constituents(arg_type)
     ):

@@ -75,7 +75,7 @@ class Transforms(workflow.MultiWorkflow[INPUT_PAIR, stages.CompilableProgram]):
         default_factory=func_to_past.adapted_func_to_past_factory
     )
 
-    foast_to_itir: workflow.Workflow[AOT_FOP, itir.Expr] = dataclasses.field(
+    foast_to_itir: workflow.Workflow[AOT_FOP, itir.FunctionDefinition] = dataclasses.field(
         default_factory=foast_to_gtir.adapted_foast_to_gtir_factory
     )
 
@@ -159,7 +159,7 @@ class Backend(Generic[core_defs.DeviceTypeT]):
     def jit(self, program: INPUT_DATA, *args: Any, **kwargs: Any) -> stages.CompiledProgram:
         if not isinstance(program, IT_PRG):
             args, kwargs = signature.convert_to_positional(program, *args, **kwargs)
-        aot_args = arguments.CompileTimeArgs.from_concrete_no_size(*args, **kwargs)
+        aot_args = arguments.CompileTimeArgs.from_concrete(*args, **kwargs)
         return self.compile(program, aot_args)
 
     def compile(self, program: INPUT_DATA, compile_time_args: CARG) -> stages.CompiledProgram:
