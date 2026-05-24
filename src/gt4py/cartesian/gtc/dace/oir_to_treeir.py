@@ -19,7 +19,7 @@ from gt4py.cartesian.stencil_builder import StencilBuilder
 
 
 ControlFlow: TypeAlias = (
-    oir.HorizontalExecution | oir.While | oir.MaskStmt | oir.HorizontalRestriction
+    oir.HorizontalExecution | oir.While | oir.MaskStmt | oir.HorizontalRestriction | oir.For
 )
 """All control flow OIR nodes"""
 
