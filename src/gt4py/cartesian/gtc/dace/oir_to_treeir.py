@@ -230,7 +230,7 @@ class OIRToTreeIR(eve.NodeVisitor):
         for_ = tir.For(
             iteration_variable=eve.SymbolRef(node.index_name),
             iteration_step=f"{node.iter_step}",
-            bounds=tir.Bounds(start=node.iter_start, end=node.iter_stop),
+            bounds=tir.Bounds(start=f"{node.iter_start}", end=f"{node.iter_stop}"),
             schedule=DEFAULT_MAP_SCHEDULE[self._device_type],
             children=[],
             parent=ctx.current_scope,
