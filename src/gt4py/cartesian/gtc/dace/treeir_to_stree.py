@@ -131,6 +131,9 @@ class TreeIRToScheduleTree(eve.NodeVisitor):
         with ContextPushPop(ctx, while_scope):
             self.visit(node.children, ctx=ctx)
 
+    def visit_ForIndex(self, node: tir.ForIndex, ctx: Context) -> None:
+        self.visit(node.name, ctx=ctx)
+
     def visit_For(self, node: tir.For, ctx: Context) -> None:
         # Define the iteration symbol
         ctx.tree.symbols[node.iteration_variable] = dtypes.int32
