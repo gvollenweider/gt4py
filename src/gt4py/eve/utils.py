@@ -1014,6 +1014,8 @@ class UIDGenerator:
         return self
 
 
+UIDs = UIDGenerator()
+
 # -- Iterators --
 S = TypeVar("S")
 K = TypeVar("K")
