@@ -74,6 +74,8 @@ TYPE_HINT_AND_CAST_BUILTINS = {
     "float",
 }
 
+REDUCTION_BUILTINS = {"reduce", "add"}
+
 builtins = {
     "I",
     "J",
@@ -96,14 +98,18 @@ builtins = {
     "__externals__",
     "__INLINED",
     "compile_assert",
+    "range",
     *MATH_BUILTINS,
     *TYPE_HINT_AND_CAST_BUILTINS,
+    *REDUCTION_BUILTINS,
 }
 
 IGNORE_WHEN_INLINING = {
     *MATH_BUILTINS,
     *TYPE_HINT_AND_CAST_BUILTINS,
+    *REDUCTION_BUILTINS,
     "compile_assert",
+    "range",
 }
 
 IGNORE_IN_ALL = {"int", "float"}
@@ -311,7 +317,13 @@ def stencil(
 
     # Setup build_info timings
     if build_info is not None:
-        time_keys = ("parse_time", "module_time", "codegen_time", "build_time", "load_time")
+        time_keys = (
+            "parse_time",
+            "module_time",
+            "codegen_time",
+            "build_time",
+            "load_time",
+        )
         build_info.update({time_key: 0.0 for time_key in time_keys})
 
     build_options = gt_definitions.BuildOptions(
@@ -996,3 +1008,14 @@ def round_away_from_zero(x) -> _gt_all_op_types:  # type: ignore[empty-body]
     even integer, e.g. 1.5 and 2.5 both round to 2.0.
     """
     pass
+
+
+# GTScript builtins: reductions
+def reduce(op, generator, initial=None):
+    """Apply the binary operator `op` cumulatively to all elements of `generator` with
+    initial value `initial` (optional)."""
+    pass
+
+
+def add(x, y):
+    """Placeholder for sum reduction operator."""

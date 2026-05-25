@@ -94,7 +94,7 @@ class TreeIRToScheduleTree(eve.NodeVisitor):
 
         # For serial loops, create a ForScope and add it to the tree
         if node.loop_order != common.LoopOrder.PARALLEL:
-            for_scope = tn.ForScope(header=_for_scope_header(node), children=[])
+            for_scope = tn.ForScope(header=_vertical_loop_header(node), children=[])
 
             with ContextPushPop(ctx, for_scope):
                 self.visit(node.children, ctx=ctx)
@@ -131,6 +131,19 @@ class TreeIRToScheduleTree(eve.NodeVisitor):
         with ContextPushPop(ctx, while_scope):
             self.visit(node.children, ctx=ctx)
 
+    def visit_ForIndex(self, node: tir.ForIndex, ctx: Context) -> None:
+        self.visit(node.name, ctx=ctx)
+
+    def visit_For(self, node: tir.For, ctx: Context) -> None:
+        # Define the iteration symbol
+        ctx.tree.symbols[node.iteration_variable] = dtypes.int32
+
+        # Create a ForScope and add it to the tree
+        for_scope = tn.ForScope(header=_for_scope_header(node), children=[])
+
+        with ContextPushPop(ctx, for_scope):
+            self.visit(node.children, ctx=ctx)
+
     def visit_TreeRoot(self, node: tir.TreeRoot) -> tn.ScheduleTreeRoot:
         """Construct a schedule tree from TreeIR."""
         tree = tn.ScheduleTreeRoot(
@@ -147,7 +160,7 @@ class TreeIRToScheduleTree(eve.NodeVisitor):
         return ctx.tree
 
 
-def _for_scope_header(node: tir.VerticalLoop) -> dcf.ForScope:
+def _vertical_loop_header(node: tir.VerticalLoop) -> dcf.ForScope:
     """Header for the tn.ForScope re-using DaCe codegen ForScope.
 
     Only setup the required data, default or mock the rest.
@@ -172,6 +185,51 @@ def _for_scope_header(node: tir.VerticalLoop) -> dcf.ForScope:
         itervar=iteration_var,
         init=node.bounds_k.start,
         update=f"{iteration_var} {plus_minus} 1",
+        # Unused
+        parent=None,  # not Tree parent, CF parent
+        dispatch_state=lambda _state: "",
+        last_block=False,
+        guard=sdfg.SDFGState(),
+        body=dcf.GeneralBlock(
+            lambda _state: "",
+            None,
+            True,
+            None,
+            [],
+            [],
+            [],
+            [],
+            [],
+            False,
+        ),
+        init_edges=[],
+    )
+    # Kill the loop_range test for memlet propagation check going in
+    dcf.ForScope.loop_range = lambda self: None
+    return for_scope
+
+
+def _for_scope_header(node: tir.For) -> dcf.ForScope:
+    """Header for the tn.ForScope re-using DaCe codegen ForScope.
+
+    Only setup the required data, default or mock the rest.
+
+    TODO: In DaCe 2.x this will be replaced by an SDFG concept which should
+    be closer and required less mockup.
+    """
+    if not dace_version.startswith("1."):
+        raise NotImplementedError("DaCe 2.x detected - please fix below code")
+
+    iteration_var = node.iteration_variable
+
+    for_scope = dcf.ForScope(
+        condition=CodeBlock(
+            code=f"{iteration_var} < {node.bounds.end}",
+            language=dtypes.Language.Python,
+        ),
+        itervar=iteration_var,
+        init=node.bounds.start,
+        update=f"{iteration_var} + {node.iteration_step}",
         # Unused
         parent=None,  # not Tree parent, CF parent
         dispatch_state=lambda _state: "",

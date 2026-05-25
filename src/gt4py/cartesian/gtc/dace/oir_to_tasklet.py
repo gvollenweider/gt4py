@@ -266,6 +266,9 @@ class OIRToTasklet(eve.NodeVisitor):
     def visit_While(self, node: oir.While, **kwargs: Any) -> None:
         raise RuntimeError("visit_While should not be called")
 
+    # def visit_For(self, node: oir.For, **kwargs: Any) -> None:
+    #     raise RuntimeError("visit_For should not be called")
+
     def visit_HorizontalRestriction(self, node: oir.HorizontalRestriction, **kwargs: Any) -> None:
         raise RuntimeError("visit_HorizontalRestriction: should be dealt in TreeIR")
 

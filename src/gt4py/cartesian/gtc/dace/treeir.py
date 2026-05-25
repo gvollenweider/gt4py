@@ -119,6 +119,19 @@ class While(TreeScope):
     """Condition as ScheduleTree worthy code"""
 
 
+class ForIndex(eve.Node):
+    name: str
+    dtype: common.DataType
+
+
+class For(TreeScope):
+    iteration_variable: eve.SymbolRef
+    iteration_step: str
+    bounds: Bounds
+
+    schedule: dtypes.ScheduleType
+
+
 class HorizontalLoop(TreeScope):
     bounds_i: Bounds
     bounds_j: Bounds

@@ -19,7 +19,7 @@ from gt4py.cartesian.stencil_builder import StencilBuilder
 
 
 ControlFlow: TypeAlias = (
-    oir.HorizontalExecution | oir.While | oir.MaskStmt | oir.HorizontalRestriction
+    oir.HorizontalExecution | oir.While | oir.MaskStmt | oir.HorizontalRestriction | oir.For
 )
 """All control flow OIR nodes"""
 
@@ -223,6 +223,23 @@ class OIRToTreeIR(eve.NodeVisitor):
         )
 
         with while_.scope(ctx):
+            groups = self._group_statements(node)
+            self.visit(groups, ctx=ctx)
+
+    def visit_ForIndex(self, node: oir.ForIndex, ctx: tir.Context) -> None:
+        self.visit(tir.ForIndex(name=node.name, dtype=node.dtype), ctx=ctx)
+
+    def visit_For(self, node: oir.For, ctx: tir.Context) -> None:
+        for_ = tir.For(
+            iteration_variable=eve.SymbolRef(node.index_name),
+            iteration_step=f"{node.iter_step}",
+            bounds=tir.Bounds(start=f"{node.iter_start}", end=f"{node.iter_stop}"),
+            schedule=DEFAULT_MAP_SCHEDULE[self._device_type],
+            children=[],
+            parent=ctx.current_scope,
+        )
+
+        with for_.scope(ctx):
             groups = self._group_statements(node)
             self.visit(groups, ctx=ctx)
 

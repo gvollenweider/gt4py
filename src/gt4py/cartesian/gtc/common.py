@@ -408,6 +408,19 @@ class While(eve.GenericNode, Generic[StmtT, ExprT]):
         verify_condition_is_boolean(self, value)
 
 
+class ForIndex(eve.Node):
+    name: str
+    dtype: DataType
+
+
+class For(eve.GenericNode, Generic[StmtT]):
+    index_name: str
+    iter_start: int
+    iter_stop: int
+    iter_step: int
+    body: List[StmtT]
+
+
 class AssignStmt(eve.GenericNode, Generic[TargetT, ExprT]):
     left: TargetT
     right: ExprT
@@ -636,7 +649,12 @@ class _LvalueDimsValidator(eve.VisitorWithSymbolTableTrait):
         self.generic_visit(node, loop_order=loop_order, **kwargs)
 
     def visit_AssignStmt(
-        self, node: AssignStmt, *, loop_order: LoopOrder, symtable: Dict[str, Any], **kwargs: Any
+        self,
+        node: AssignStmt,
+        *,
+        loop_order: LoopOrder,
+        symtable: Dict[str, Any],
+        **kwargs: Any,
     ) -> None:
         decl = symtable.get(node.left.name, None)
         if decl is None:
